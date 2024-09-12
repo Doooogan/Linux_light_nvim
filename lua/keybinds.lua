@@ -2,6 +2,9 @@ local keymap = vim.keymap.set
 
 local opts = {silent = true}
 
+vim.opt.wrap = true
+vim.opt.linebreak = true
+
 keymap("","<Space>", "<Nop>", opts)
 vim.g.mapleader = " "
 
@@ -29,4 +32,10 @@ keymap("n", "<leader>zd",":Telekasten find_daily_notes<CR>", opts)
 keymap("n", "<leader>zg",":Telekasten search_notes<CR>", opts)
 keymap("n", "<leader>z",":Telekasten panel<CR>", opts)
 keymap("n", "<cr>",":Telekasten follow_link<CR>", opts)
+
+
+
+
+keymap("n", "<leader>w",":w<CR>", opts)
+keymap("n", "<leader>q",":q<CR>", opts)
 
