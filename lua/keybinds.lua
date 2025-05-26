@@ -1,12 +1,6 @@
 local keymap = vim.keymap.set
 local telekasten = require("telekasten")
 
--- Wrap the original follow_link to add a jump mark before changing file
-vim.keymap.set("n", "<CR>", function()
-  vim.cmd("normal! m'")
-  telekasten.follow_link()
-end, { noremap = true, silent = true })
-
 local opts = {silent = true}
 
 vim.opt.wrap = true
@@ -29,6 +23,7 @@ keymap("n", ";", ":", { noremap = true })
 vim.keymap.set("n", "<leader>cfg", function()
   vim.cmd("cd ~/.config/nvim")
   print("PWD set to ~/.config/nvim")
+
 end, { desc = "Set PWD to Neovim config folder" })
 
 
@@ -70,11 +65,20 @@ vim.keymap.set("n", "<S-Tab>", function()
   end
 end, { silent = true, noremap = true })
 
-
--- Wrap the original follow_link to add a jump mark before changing file
+-- Link following with enter, allowing to jump back with BS
 vim.keymap.set("n", "<CR>", function()
-  vim.cmd("normal! m'")
-  telekasten.follow_link()
+  local row, col = unpack(vim.api.nvim_win_get_cursor(0))
+  local line = vim.api.nvim_get_current_line()
+
+  for start_idx, match in line:gmatch("()(%[%[.-%]%])") do
+    local end_idx = start_idx + #match - 1
+    if col >= start_idx - 1 and col <= end_idx then
+      vim.cmd("normal! m'")
+      telekasten.follow_link()
+      return
+    end
+  end
+  -- silently ignore if not on a link
 end, { noremap = true, silent = true })
 
 vim.keymap.set("n", "<BS>", "<C-o>", { noremap = true, silent = true })
