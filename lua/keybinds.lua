@@ -38,6 +38,10 @@ keymap("n", "<leader>zg",":Telekasten search_notes<CR>", opts)
 keymap("n", "<leader>z",":Telekasten panel<CR>", opts)
 keymap("n", "<cr>",":Telekasten follow_link<CR>", opts)
 
+vim.keymap.set('n', '<leader>zt', function()
+  vim.cmd('edit ~/zettelkasten/TODO-202505252336.md')
+end, { desc = 'Open specific file' })
+
 vim.keymap.set("n", "<leader>td", function()
   local file = vim.fn.expand("%:p")
   vim.cmd("bdelete")
