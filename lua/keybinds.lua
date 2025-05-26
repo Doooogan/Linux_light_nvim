@@ -1,4 +1,11 @@
 local keymap = vim.keymap.set
+local telekasten = require("telekasten")
+
+-- Wrap the original follow_link to add a jump mark before changing file
+vim.keymap.set("n", "<CR>", function()
+  vim.cmd("normal! m'")
+  telekasten.follow_link()
+end, { noremap = true, silent = true })
 
 local opts = {silent = true}
 
@@ -9,7 +16,8 @@ keymap("","<Space>", "<Nop>", opts)
 vim.g.mapleader = " "
 
 keymap("n", "<S-l>", ":bnext<CR>", opts)
-keymap("n", "<S-R>", ":bprevious<CR>", opts)
+keymap("n", "<S-h>", ":bprevious<CR>", opts)
+keymap("n", "<backspace>", ":bprevious<CR>", opts)
 
 
 keymap("n", "<S-q>", "<cmd>Bdelete<CR>", opts)
@@ -61,6 +69,17 @@ vim.keymap.set("n", "<S-Tab>", function()
     vim.notify("No previous link", vim.log.levels.INFO, { title = "WikiJump" })
   end
 end, { silent = true, noremap = true })
+
+
+-- Wrap the original follow_link to add a jump mark before changing file
+vim.keymap.set("n", "<CR>", function()
+  vim.cmd("normal! m'")
+  telekasten.follow_link()
+end, { noremap = true, silent = true })
+
+vim.keymap.set("n", "<BS>", "<C-o>", { noremap = true, silent = true })
+
+
 
 -- Telescope Mapping
 keymap("n", "<leader>ff",":Telescope find_files<CR>", opts)
