@@ -2,12 +2,6 @@
 local ensure_packer = function()
   local fn = vim.fn
   local install_path = fn.stdpath('data')..'/site/pack/packer/start/packer.nvim'
-  if fn.empty(fn.glob(install_path)) > 0 then
-    fn.system({'git', 'clone', '--depth', '1', 'https://github.com/wbthomason/packer.nvim', install_path})
-    vim.cmd [[packadd packer.nvim]]
-    return true
-  end
-  return false
 end
 
 local packer_bootstrap = ensure_packer()
@@ -27,36 +21,70 @@ packer.init {
   },
 }
 
--- Install your plugins here
 packer.startup(function(use)
-  -- Packer can manage itself
+  -- Packer manages itself
   use 'wbthomason/packer.nvim'
 
-  -- Example plugins
-  use 'nvim-lua/plenary.nvim'    -- Useful lua functions used by lots of plugins
-  use 'nvim-telescope/telescope.nvim' -- Fuzzy finder plugin
-  use 'folke/tokyonight.nvim'
-  use 'lunarvim/darkplus.nvim'
+  use 'nvim-lua/plenary.nvim'
+  use 'nvim-telescope/telescope.nvim'
 
-  use 'renerocksai/telekasten.nvim'
+  -- Colorscheme setup
+  use {
+    'folke/tokyonight.nvim',
+    config = function()
+      require('config.colorscheme')
+    end
+  }
 
-  -- Add more plugins here as needed
-  
-  use({ "iamcco/markdown-preview.nvim", 
-	run = "cd app && npm install", 
-	setup = function() vim.g.mkdp_filetypes = { "markdown" } end, 
-	ft = { "markdown" }, })
+  use 'lunarvim/darkplus.nvim'  -- Optional, in case you switch themes manually
+
+  use {
+    'renerocksai/telekasten.nvim',
+    requires = {'nvim-telescope/telescope.nvim'},
+    config = function()
+      require('config.telekasten_config').setup()
+    end
+  }
+
+  use {
+    'iamcco/markdown-preview.nvim',
+    run = "cd app && npm install",
+    setup = function()
+      vim.g.mkdp_filetypes = { "markdown" }
+    end,
+    ft = { "markdown" },
+    config = function()
+      require('config.mdpreview')  -- Assuming you have this
+    end
+  }
 
   use {
     'nvim-treesitter/nvim-treesitter',
     run = ':TSUpdate',
     config = function()
-      require('config.treesitter')  -- load external config
+      require('config.treesitter')
     end
   }
 
-  -- Automatically set up your configuration after cloning packer.nvim
+  -- Your keymaps
+  use {
+    'nvim-lua/plenary.nvim',  -- Just a dummy anchor plugin
+    config = function()
+      require('config.keybinds')
+    end
+  }
+
+  -- Auto-sync Packer on first install
   if packer_bootstrap then
     require('packer').sync()
   end
 end)
+
+
+-- Auto-compile when plugins.lua is saved
+vim.cmd([[
+  augroup packer_user_config
+    autocmd!
+    autocmd BufWritePost plugins.lua source <afile> | PackerCompile
+  augroup end
+]])
