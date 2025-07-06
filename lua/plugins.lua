@@ -47,6 +47,13 @@ packer.startup(function(use)
 	setup = function() vim.g.mkdp_filetypes = { "markdown" } end, 
 	ft = { "markdown" }, })
 
+  use {
+    'nvim-treesitter/nvim-treesitter',
+    run = ':TSUpdate',
+    config = function()
+      require('config.treesitter')  -- load external config
+    end
+  }
 
   -- Automatically set up your configuration after cloning packer.nvim
   if packer_bootstrap then
