@@ -52,7 +52,8 @@ M.setup = function()
 
 	local keymap = vim.keymap.set
 	local opts = { silent = true }
-
+	-- ============================================================================================
+	-- Keybindings
 	-- Telekasten Mappings
 	keymap("n", "<leader>zf", ":Telekasten find_notes<CR>", opts)
 	keymap("n", "<leader>zn", ":Telekasten new_note<CR>", opts)
@@ -60,10 +61,12 @@ M.setup = function()
 	keymap("n", "<leader>zd", ":Telekasten find_daily_notes<CR>", opts)
 	keymap("n", "<leader>zw", ":Telekasten find_weekly_notes<CR>", opts)
 	keymap("n", "<leader>zg", ":Telekasten search_notes<CR>", opts)
+	keymap("n", "<leader>zt", ":Telekasten show_tags<CR>", opts)
 	keymap("n", "<leader>z", ":Telekasten panel<CR>", opts)
+
 	keymap("n", "<CR>", ":Telekasten follow_link<CR>", opts)
 
-	keymap("n", "<leader>zt", function()
+	keymap("n", "<leader>ztodo", function()
 		vim.cmd("edit ~/zettelkasten/TODO-202505252336.md")
 	end, { desc = "Open specific file" })
 
@@ -110,6 +113,55 @@ M.setup = function()
 
 	-- Going back with backspace
 	keymap("n", "<BS>", "<C-o>", { noremap = true, silent = true })
+
+	-- 
+	--
+	
+
+	vim.keymap.set("n", "<leader>zr", function()
+	  local notes = vim.fn.globpath(vim.fn.expand("~/zettelkasten"), "*.md", false, true)
+	  local filtered = {}
+
+	  for _, note in ipairs(notes) do
+	    if not note:find("/daily/") and not note:find("/weekly/") then
+	      table.insert(filtered, note)
+	    end
+	  end
+
+	  if #filtered == 0 then
+	    vim.notify("No non-daily/weekly notes found", vim.log.levels.WARN)
+	    return
+	  end
+	  math.randomseed(os.time())
+	  local random_index = math.random(#filtered)
+	  vim.cmd("edit " .. filtered[random_index])
+	end, { desc = "Open random Zettelkasten note (excluding dailies/weeklies)" })
+
+
+
+	vim.keymap.set("n", "<leader>zd", function()
+	  local file = vim.fn.expand("%:p")
+
+	  -- Confirm it's a markdown file in your zettelkasten
+	  if not file:match(vim.fn.expand("~/zettelkasten/") .. ".*%.md$") then
+	    vim.notify("Not a Telekasten note", vim.log.levels.WARN)
+	    return
+	  end
+
+	  local confirm = vim.fn.confirm("Delete this note?\n" .. file, "&Yes\n&No", 2)
+	  if confirm ~= 1 then
+	    return
+	  end
+
+	  -- Close the buffer and delete the file
+	  vim.cmd("bdelete")
+	  vim.fn.delete(file)
+	  vim.notify("Note deleted", vim.log.levels.INFO)
+	end, { desc = "Delete current Telekasten note" })
+
+
+
+
 end
 
 return M
