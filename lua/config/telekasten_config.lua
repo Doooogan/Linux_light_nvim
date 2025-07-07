@@ -70,6 +70,10 @@ M.setup = function()
 		vim.cmd("edit ~/zettelkasten/TODO-202505252336.md")
 	end, { desc = "Open specific file" })
 
+	keymap("n", "<leader>zh", function()
+		vim.cmd("edit ~/zettelkasten/Homepage-202507061939.md")
+	end, { desc = "Open specific file" })
+
 	keymap("n", "<leader>td", function()
 		local file = vim.fn.expand("%:p")
 		vim.cmd("bdelete")

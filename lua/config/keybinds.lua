@@ -43,10 +43,18 @@ keymap("n", "<leader>mp", "<cmd>MarkdownPreview<CR>", { desc = "Markdown Preview
 keymap("n", "<leader>ms", "<cmd>MarkdownPreviewStop<CR>", { desc = "Stop Preview" })
 
 
-
 -- Save and Quit
 keymap("n", "<leader>w",":w<CR>", opts)
 keymap("n", "<leader>q",":q<CR>", opts)
 
 -- Exit Insert mode
 keymap("i", "jj","<ESC>", opts)
+
+
+
+-- Yanking filepath to register
+vim.keymap.set("n", "<leader>yp", function()
+  local path = vim.fn.expand("%:p")
+  vim.fn.setreg('"', path)  -- sets the unnamed register (default yank target)
+  vim.notify("Yanked path: " .. path)
+end, { desc = "Yank full file path to unnamed register" })
