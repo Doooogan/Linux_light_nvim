@@ -160,6 +160,9 @@ M.setup = function()
 	end, { desc = "Delete current Telekasten note" })
 
 
+	vim.keymap.set('v', '<leader>zn', function()
+	  require('config.telekasten_add_func').create_note_from_visual()
+	end, { desc = 'Create note from visual text using hotkeys' })
 
 
 end
