@@ -62,6 +62,7 @@ M.setup = function()
 	keymap("n", "<leader>zw", ":Telekasten find_weekly_notes<CR>", opts)
 	keymap("n", "<leader>zg", ":Telekasten search_notes<CR>", opts)
 	keymap("n", "<leader>zt", ":Telekasten show_tags<CR>", opts)
+	keymap("n", "<leader>zy", ":Telekasten yank_notelink<CR>", opts)
 	keymap("n", "<leader>z", ":Telekasten panel<CR>", opts)
 
 	keymap("n", "<CR>", ":Telekasten follow_link<CR>", opts)
@@ -74,11 +75,6 @@ M.setup = function()
 		vim.cmd("edit ~/zettelkasten/Homepage-202507061939.md")
 	end, { desc = "Open specific file" })
 
-	keymap("n", "<leader>td", function()
-		local file = vim.fn.expand("%:p")
-		vim.cmd("bdelete")
-		vim.fn.delete(file)
-	end, { desc = "Delete current Telekasten note" })
 
 	keymap("n", "<leader>zpw", function()
 		local template_path = vim.fn.expand("~/zettelkasten/Weekly Value Template-202505251830.md")
@@ -164,6 +160,9 @@ M.setup = function()
 	end, { desc = "Delete current Telekasten note" })
 
 
+	vim.keymap.set('v', '<leader>zn', function()
+	  require('config.telekasten_add_func').create_note_from_visual()
+	end, { desc = 'Create note from visual text using hotkeys' })
 
 
 end
