@@ -25,7 +25,7 @@ packer.startup(function(use)
   -- Packer manages itself
   use 'wbthomason/packer.nvim'
 
-  use 'nvim-lua/plenary.nvim'
+  --use 'nvim-lua/plenary.nvim'
   use 'nvim-telescope/telescope.nvim'
 
   -- Colorscheme setup
@@ -81,6 +81,15 @@ packer.startup(function(use)
     end,
     ft = { "markdown", "text", "norg","telekasten"},
   }
+
+  use {
+    'neovim/nvim-lspconfig',
+    config = function()
+      require('config.lsp')
+    end
+  }
+
+
 
   -- Auto-sync Packer on first install
   if packer_bootstrap then

@@ -29,6 +29,7 @@ end, { desc = "Set PWD to Neovim config folder" })
 
 
 
+keymap('n', 'gd', vim.lsp.buf.definition, opts)
 
 
 -- Telescope Mapping
