@@ -74,6 +74,14 @@ packer.startup(function(use)
     end
   }
 
+  use {
+    "gaoDean/autolist.nvim",
+    config = function()
+      require("config.autolist")
+    end,
+    ft = { "markdown", "text", "norg","telekasten"},
+  }
+
   -- Auto-sync Packer on first install
   if packer_bootstrap then
     require('packer').sync()
