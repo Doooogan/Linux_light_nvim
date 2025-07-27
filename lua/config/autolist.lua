@@ -9,7 +9,6 @@ vim.api.nvim_create_autocmd("FileType", {
 
     vim.keymap.set("i", "<tab>", "<cmd>AutolistTab<cr>", opts)
     vim.keymap.set("i", "<s-tab>", "<cmd>AutolistShiftTab<cr>", opts)
-    vim.keymap.set("i", "<CR>", "<CR><cmd>AutolistNewBullet<cr>", opts)
     vim.keymap.set("n", "o", "o<cmd>AutolistNewBullet<cr>", opts)
     vim.keymap.set("n", "O", "O<cmd>AutolistNewBulletBefore<cr>", opts)
     vim.keymap.set("n", "<leader>d", "<cmd>AutolistToggleCheckbox<cr><CR>", opts)
@@ -26,12 +25,11 @@ vim.api.nvim_create_autocmd("FileType", {
 
     vim.keymap.set("n", "<leader>b", function()
       local line = vim.api.nvim_get_current_line()
-      local bullet_pattern = "^%s*([-*+])%s+"
-      local checkbox_pattern = "^%s*([-*+])%s+%[.%]%s+"
+      local bullet_pattern = "^(%s*)([-*+])%s+"
+      local checkbox_pattern = "^(%s*)([-*+])%s+%[.%]%s+"
     
-      -- Only apply if it's a bullet, and not already a checkbox
       if line:match(bullet_pattern) and not line:match(checkbox_pattern) then
-        local new_line = line:gsub(bullet_pattern, "%1 [ ] ")
+        local new_line = line:gsub(bullet_pattern, "%1%2 [ ] ")
         vim.api.nvim_set_current_line(new_line)
       end
     end, { desc = "Convert bullet to checkbox" })

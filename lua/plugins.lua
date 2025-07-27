@@ -89,6 +89,18 @@ packer.startup(function(use)
     end
   }
 
+  use {
+    "MeanderingProgrammer/render-markdown.nvim",
+    after = "nvim-treesitter",
+    requires = {
+      "nvim-treesitter/nvim-treesitter",
+      "nvim-tree/nvim-web-devicons", -- or 'echasnovski/mini.nvim' for mini.icons support
+    },
+    config = function()
+      require("config.render_markdown")
+    end,
+  }
+
 
 
   -- Auto-sync Packer on first install
