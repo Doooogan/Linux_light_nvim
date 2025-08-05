@@ -9,8 +9,13 @@ vim.api.nvim_create_autocmd("FileType", {
 
     vim.keymap.set("i", "<tab>", "<cmd>AutolistTab<cr>", opts)
     vim.keymap.set("i", "<s-tab>", "<cmd>AutolistShiftTab<cr>", opts)
+    vim.keymap.set("i", "<CR>", "<CR><cmd>AutolistNewBullet<cr>")
     vim.keymap.set("n", "o", "o<cmd>AutolistNewBullet<cr>", opts)
     vim.keymap.set("n", "O", "O<cmd>AutolistNewBulletBefore<cr>", opts)
+
+    --vim.keymap.set("n", "<leader>d", "0f[di[ix<esc>0", opts)
+
+
     vim.keymap.set("n", "<leader>d", "<cmd>AutolistToggleCheckbox<cr><CR>", opts)
     --vim.keymap.set("n", "<C-r>", "<cmd>AutolistRecalculate<cr>", opts)
 

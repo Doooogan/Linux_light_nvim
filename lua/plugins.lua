@@ -79,7 +79,6 @@ packer.startup(function(use)
     config = function()
       require("config.autolist")
     end,
-    ft = { "markdown", "text", "norg","telekasten"},
   }
 
   use {
