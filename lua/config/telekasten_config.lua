@@ -97,15 +97,28 @@ M.setup = function()
 	end, { silent = true, noremap = true })
 
 	-- Link following with enter, allowing to jump back with BS
+
 	keymap("n", "<CR>", function()
 		local row, col = unpack(vim.api.nvim_win_get_cursor(0))
 		local line = vim.api.nvim_get_current_line()
 
 		for start_idx, match in line:gmatch("()(%[%[.-%]%])") do
-			local end_idx = start_idx + #match - 1
-			if col >= start_idx - 1 and col <= end_idx then
+			local match_len = #match
+			local match_start_col = start_idx - 1  -- 0-based
+			local match_end_col = match_start_col + match_len - 1
+
+			local link_text_start = match_start_col + 2
+			local link_text_end = match_end_col - 2
+
+			if col >= match_start_col and col <= match_end_col then
+				-- Move cursor to middle of link text if not already inside
+				if col < link_text_start or col > link_text_end then
+					local middle = math.floor((link_text_start + link_text_end) / 2)
+					vim.api.nvim_win_set_cursor(0, { row, middle })
+				end
+
 				vim.cmd("normal! m'")
-				telekasten.follow_link()
+				require("telekasten").follow_link()
 				return
 			end
 		end
