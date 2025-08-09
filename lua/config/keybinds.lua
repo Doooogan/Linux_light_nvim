@@ -59,3 +59,19 @@ vim.keymap.set("n", "<leader>yp", function()
   vim.fn.setreg('"', path)  -- sets the unnamed register (default yank target)
   vim.notify("Yanked path: " .. path)
 end, { desc = "Yank full file path to unnamed register" })
+
+
+vim.keymap.set("n", "<C-h>", "<C-w>h", { noremap = true, silent = true })
+vim.keymap.set("n", "<C-l>", "<C-w>l", { noremap = true, silent = true })
+
+
+
+vim.keymap.set("n", "<leader>bda", function()
+  local current = vim.api.nvim_get_current_buf()
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_loaded(buf) and buf ~= current then
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end
+  end
+  vim.notify("Closed all buffers except current", vim.log.levels.INFO)
+end, { noremap = true, silent = true, desc = "Delete all buffers but current" })
