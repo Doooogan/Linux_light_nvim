@@ -1,5 +1,5 @@
 
-vim.keymap.set("n", "<leader>rre", function()
+vim.keymap.set("n", "<leader>rae", function()
   local path = vim.fn.expand("~/zettelkasten/Encounter Table-202508052246.md")
   local levels = {
     ["1"] = "### D20 Encounters %(Wonderland Lvl 1%)",
@@ -134,7 +134,8 @@ vim.keymap.set("n", "<leader>ra", function()
     while i <= #lines and #entries < 10 do
       local num, text = lines[i]:match("^(%d+)%.%s*%*%*(.-)%*%*%s*[–-]%s*(.+)")
       if num and text then
-        local full = num .. ". " .. text .. " – " .. lines[i]:match("–%s*(.+)") or ""
+        local full = text .. " – " .. lines[i]:match("–%s*(.+)") or ""
+        -- local full = num .. ". " .. text .. " – " .. lines[i]:match("–%s*(.+)") or ""
         i = i + 1
         while i <= #lines and not lines[i]:match("^%d+%.") and lines[i]:match("%S") do
           full = full .. " " .. vim.trim(lines[i])
@@ -179,10 +180,10 @@ local function roll_from_file(path, count)
   while i <= #lines and #entries < 100 do
     local number, text = lines[i]:match("^(%d+)%.%s*(.+)")
     if number then
-      local entry = number .. ". " .. text
+      local entry = text
       i = i + 1
       while i <= #lines and not lines[i]:match("^%d+%.") and lines[i]:match("%S") do
-        entry = entry .. " " .. vim.trim(lines[i])
+        entry = vim.trim(lines[i])
         i = i + 1
       end
       table.insert(entries, vim.trim(entry))
@@ -259,7 +260,7 @@ vim.keymap.set("n", "<leader>rdm", function()
     while i <= #lines and #entries < 100 do
       local num, desc = lines[i]:match("^(%d+)[%.%-]%s*(.+)")
       if num and desc then
-        table.insert(entries, string.format("%d. %s", tonumber(num), desc))
+        table.insert(entries, desc)
       elseif lines[i]:match("^00[%.%-]%s*(.+)") then
         table.insert(entries, "100. " .. lines[i]:match("^00[%.%-]%s*(.+)"))
       end
@@ -340,7 +341,7 @@ vim.keymap.set("n", "<leader>re", function()
   local roll = math.random(1, 20)
   local result = table_map[roll] or "Unknown Result"
 
-  local output = string.format("%d. %s", roll, result)
+  local output = result
   vim.fn.setreg('"', output)
   vim.notify("Rolled: " .. output, vim.log.levels.INFO, { title = "Random Encounter" })
 end, { noremap = true, silent = true, desc = "Roll from Random Encounter Table" })
