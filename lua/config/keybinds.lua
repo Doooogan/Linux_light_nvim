@@ -6,6 +6,8 @@ local opts = {silent = true}
 vim.opt.wrap = true
 vim.opt.linebreak = true
 
+
+vim.o.mouse = ""
 keymap("","<Space>", "<Nop>", opts)
 vim.g.mapleader = " "
 
@@ -31,7 +33,7 @@ end, { desc = "Set PWD to Neovim config folder" })
 
 keymap('n', 'gd', vim.lsp.buf.definition, opts)
 
-
+keymap('n', '<C-s>', '<C-w>v', { desc = 'Open vertical split' })
 -- Telescope Mapping
 keymap("n", "<leader>ff",":Telescope find_files<CR>", opts)
 keymap("n", "<leader>fg",":Telescope live_grep<CR>", opts)
@@ -68,10 +70,25 @@ vim.keymap.set("n", "<C-l>", "<C-w>l", { noremap = true, silent = true })
 
 vim.keymap.set("n", "<leader>bda", function()
   local current = vim.api.nvim_get_current_buf()
+
   for _, buf in ipairs(vim.api.nvim_list_bufs()) do
     if vim.api.nvim_buf_is_loaded(buf) and buf ~= current then
-      vim.api.nvim_buf_delete(buf, { force = true })
+      local modified = vim.api.nvim_buf_get_option(buf, "modified")
+      local readonly = vim.api.nvim_buf_get_option(buf, "readonly")
+
+      -- Skip unsaved or readonly buffers
+      if not modified and not readonly then
+        vim.api.nvim_buf_delete(buf, { force = false })
+      end
     end
   end
-  vim.notify("Closed all buffers except current", vim.log.levels.INFO)
-end, { noremap = true, silent = true, desc = "Delete all buffers but current" })
+
+  vim.notify("Closed all **unmodified** buffers except current", vim.log.levels.INFO)
+end, { noremap = true, silent = true, desc = "Delete all unmodified buffers but current" })
+
+
+
+
+vim.keymap.set("n", "<leader>zo", function()
+  require("config.zk_utils").insert_orphan_links_by_tag()
+end, { desc = "List true orphan notes for a :tag:" })

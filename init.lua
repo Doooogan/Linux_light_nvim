@@ -5,9 +5,12 @@ require("plugins")
 -- Load core user config (colors, keymaps, LSP, etc.)
 require("config.colorscheme")
 require("config.keybinds")
+require("config.keybinds_ext")
 require("config.keybinds_random_rolls")
+require("config.tk_functions.note_processing")
 require("config.filetype")
 require("config.lsp")
+
 
 
 
