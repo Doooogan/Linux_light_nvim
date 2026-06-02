@@ -395,3 +395,18 @@ vim.keymap.set("n", "<leader>rr", function()
     vim.notify(output, vim.log.levels.INFO, { title = "Dice Roll" })
   end)
 end, { noremap = true, silent = true, desc = "Roll dice with modifier" })
+
+
+vim.keymap.set('n', '<leader>ol', function()
+  local line = vim.api.nvim_get_current_line()
+  -- Match: optional letter + " = " + name, ignoring trailing " (2nd)" etc.
+  local name = line:match("^%s*%a?%s*=%s*(.+)$")
+  if not name then
+    vim.notify("No match on this line", vim.log.levels.WARN)
+    return
+  end
+  -- Strip trailing " (2nd)", " (3rd)", etc.
+  name = name:gsub("%s*%(%w+%)%s*$", "")
+  local path = "/home/doogan/proj/wonderland/split_levels/" .. name .. ".pdf"
+  vim.fn.jobstart({ "xdg-open", path }, { detach = true })
+end, { desc = "Open room PDF" })

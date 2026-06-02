@@ -47,6 +47,14 @@ packer.startup(function(use)
   }
 
   use {
+    'dhruvasagar/vim-table-mode',
+    ft = { 'markdown', 'rst', 'org' },
+    config = function()
+      -- Use markdown-compatible corners so tables render as valid markdown
+      vim.g.table_mode_corner = '|'
+    end,
+  }
+  use {
     'iamcco/markdown-preview.nvim',
     run = "cd app && npm install",
     setup = function()

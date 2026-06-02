@@ -6,13 +6,14 @@ M.setup = function()
 	local home = vim.fn.expand('~/zettelkasten')
 
 	local telekasten = require("telekasten")
+	local tk_actions = require("config.tk_functions.insert_links")
 
 	telekasten.setup({
 		home = home,
 		take_over_my_home = true,
 		auto_set_filetype = true,
 
-		dailes = home .. '/' .. 'daily',
+		dailies = home .. '/' .. 'daily',
 		weeklies = home .. '/' .. 'weekly',
 		templates = home .. '/' .. 'templates',
 
@@ -23,7 +24,7 @@ M.setup = function()
 		uuid_sep = '-',
 
 		follow_create_nonexisting = true,
-		dalies_create_nonexisting = true,
+		dailies_create_nonexisting = true,
 		weeklies_create_nonexisting = true,
 
 		journal_auto_open = false,
@@ -48,6 +49,11 @@ M.setup = function()
 		rename_update_links = true,
 		media_previewer = 'telescope-media-files',
 		follow_url_fallback = nil,
+
+		mappings = {
+			["<C-i>"] = tk_actions.insert_links_for_visible,
+			vsplit_follow = '<C-s>'
+		}
 	})
 
 	local keymap = vim.keymap.set
@@ -132,27 +138,40 @@ M.setup = function()
 	
 
 	vim.keymap.set("n", "<leader>zr", function()
-	  local notes = vim.fn.globpath(vim.fn.expand("~/zettelkasten"), "*.md", false, true)
-	  local filtered = {}
+	    local ignore_tags = { "fleeting", "daily", "weekly", "atomic",
+				"DND", "book", "cooking", "tea", "movie",
+				"syn", "farm"}
 
-	  for _, note in ipairs(notes) do
-	    if not note:find("/daily/") and not note:find("/weekly/") then
-	      table.insert(filtered, note)
+	    local notes = vim.fn.globpath(vim.fn.expand("~/zettelkasten"), "*.md", false, true)
+	    local filtered = {}
+
+	    for _, note in ipairs(notes) do
+		local content = table.concat(vim.fn.readfile(note), "\n")
+		local dominated = false
+
+		for _, tag in ipairs(ignore_tags) do
+		    if content:match(":" .. tag .. ":") then
+			dominated = true
+			break
+		    end
+		end
+
+		if not dominated then
+		    table.insert(filtered, note)
+		end
 	    end
-	  end
 
-	  if #filtered == 0 then
-	    vim.notify("No non-daily/weekly notes found", vim.log.levels.WARN)
-	    return
-	  end
-	  math.randomseed(os.time())
-	  local random_index = math.random(#filtered)
-	  vim.cmd("edit " .. filtered[random_index])
-	end, { desc = "Open random Zettelkasten note (excluding dailies/weeklies)" })
+	    if #filtered == 0 then
+		vim.notify("No notes found after filtering", vim.log.levels.WARN)
+		return
+	    end
 
+	    math.randomseed(os.time())
+	    vim.cmd("edit " .. vim.fn.fnameescape(filtered[math.random(#filtered)]))
+	end, { desc = "Open random note (excluding ignored tags)" })
 
 
-	vim.keymap.set("n", "<leader>zd", function()
+	vim.keymap.set("n", "<leader>dz", function()
 	  local file = vim.fn.expand("%:p")
 
 	  -- Confirm it's a markdown file in your zettelkasten
