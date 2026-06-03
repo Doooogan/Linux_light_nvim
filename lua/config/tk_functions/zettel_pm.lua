@@ -15,6 +15,7 @@
 --   title, status (todo/doing/blocked/done), priority (A/B/C),
 --   deadline (hard "must be done by", optional),
 --   due_date  (start/snooze date — empty or past = visible, future = hidden),
+--   tags      (colon-wrapped ":tag:" syntax, chosen from the TAGS list below),
 --   snooze_count
 --
 -- AGENDA (read-only scratch buffer):
@@ -47,6 +48,7 @@
 --     <S-Tab>      jump to previous item (wraps)
 --     <CR>         jump to the project/ticket under the cursor
 --     z            toggle show/hide snoozed items
+--     f            cycle tag filter (all → tag1 → tag2 → … → all)
 --     r            refresh (recompute from disk)
 --     q            close the agenda
 --
@@ -73,6 +75,11 @@ local done_dir = vault .. "done/"
 
 local STATUSES   = { "todo", "doing", "blocked", "done" }
 local PRIORITIES = { "A", "B", "C" }
+
+-- Your tag vocabulary. Edit this list to add/remove tags. They show up in the
+-- promotion/batch wizard as a single-choice step, and the agenda cycles
+-- through them with `f` to filter. Keep them short and lowercase.
+local TAGS = {"farm", "errands", "home"}
 
 -- ---------------------------------------------------------------------
 -- Small date helpers (all dates are plain YYYY-MM-DD strings)
@@ -148,13 +155,54 @@ local function is_active(fm)
     return not date_before(today_str(), due)  -- due <= today
 end
 
--- First unchecked "- [ ]" step in a project body, or nil if none remain.
+-- Find the next actionable step in a project body, supporting arbitrary
+-- nesting. The "next step" is the first UNCHECKED LEAF — an unchecked box with
+-- no unchecked box nested beneath it (if it had unchecked children, you'd do
+-- those first). Returns a display string with the ancestor trail for context,
+-- e.g. "Item one > Item one subtask", or nil if nothing is left.
+--
+-- Checked boxes ("[x]") are ignored for display but still parsed so depth/
+-- structure is understood correctly.
 local function next_step(body)
+    -- Parse every checkbox into {depth, checked, text}.
+    local boxes = {}
     for _, line in ipairs(body) do
-        if line:match("^%s*%-%s*%[%s%]") then
-            -- strip the "- [ ] " prefix for display
-            local text = line:gsub("^%s*%-%s*%[%s%]%s*", "")
-            return text
+        local indent, mark = line:match("^(%s*)%-%s*%[([%sxX])%]")
+        if indent ~= nil then
+            local text = line:gsub("^%s*%-%s*%[[%sxX]%]%s*", "")
+            table.insert(boxes, {
+                depth = #indent,
+                checked = (mark ~= " "),
+                text = text,
+            })
+        end
+    end
+    if #boxes == 0 then return nil end
+
+    -- A box is a leaf if the next box (if any) is NOT deeper than it.
+    local function is_leaf(i)
+        local nxt = boxes[i + 1]
+        if not nxt then return true end
+        return nxt.depth <= boxes[i].depth
+    end
+
+    -- Walk in order; first unchecked leaf is the next step.
+    for i, box in ipairs(boxes) do
+        if not box.checked and is_leaf(i) then
+            -- Build the ancestor trail: the nearest shallower box at each
+            -- decreasing depth above this one (skipping checked ancestors is
+            -- unnecessary — an unchecked leaf's parents are unchecked too).
+            local trail = {}
+            local depth_floor = box.depth
+            for j = i - 1, 1, -1 do
+                if boxes[j].depth < depth_floor then
+                    table.insert(trail, 1, boxes[j].text)
+                    depth_floor = boxes[j].depth
+                    if depth_floor == 0 then break end
+                end
+            end
+            table.insert(trail, box.text)  -- the leaf itself, last
+            return table.concat(trail, " > ")
         end
     end
     return nil
@@ -179,11 +227,29 @@ end
 -- ---------------------------------------------------------------------
 -- Agenda data collection
 -- ---------------------------------------------------------------------
-local function collect(show_snoozed)
-    local items = {}        -- {file, kind, title, step, priority, deadline, status, snoozed}
+local function collect(show_snoozed, filter_tag)
+    local items = {}        -- {file, kind, title, step, priority, deadline, status, snoozed, tags}
     local fleeting_unprocessed = 0
     local fleeting_snoozing = 0
     local today = today_str()
+
+    -- Parse colon-wrapped tags (":tag1: :tag2:") into a trimmed list.
+    local function parse_tags(s)
+        local out = {}
+        for t in (s or ""):gmatch(":([%w%-_]+):") do
+            table.insert(out, t)
+        end
+        return out
+    end
+
+    -- Does this item's tag list contain filter_tag? (nil filter = match all)
+    local function tag_matches(tags)
+        if not filter_tag then return true end
+        for _, t in ipairs(tags) do
+            if t == filter_tag then return true end
+        end
+        return false
+    end
 
     for _, file in ipairs(vim.fn.glob(vault .. "*.md", false, true)) do
         local fm, marker = read_note(file)
@@ -198,8 +264,10 @@ local function collect(show_snoozed)
 
         elseif marker == "project" or marker == "ticket" then
             local snoozed = is_snoozed(fm)
-            -- Include if active, or (if showing snoozed) snoozed.
-            local include = is_active(fm) or (show_snoozed and snoozed)
+            local tags = parse_tags(fm.tags)
+            -- Include if active (or snoozed when shown) AND passes tag filter.
+            local include = (is_active(fm) or (show_snoozed and snoozed))
+                and tag_matches(tags)
             if include then
                 local title = (fm.title and fm.title ~= "" and fm.title)
                     or vim.fn.fnamemodify(file, ":t")
@@ -215,7 +283,7 @@ local function collect(show_snoozed)
                             step = step, priority = fm.priority or "",
                             deadline = fm.deadline or "",
                             status = fm.status or "", snoozed = snoozed,
-                            due_date = fm.due_date or "",
+                            due_date = fm.due_date or "", tags = tags,
                         })
                     end
                 else
@@ -224,7 +292,7 @@ local function collect(show_snoozed)
                         step = nil, priority = fm.priority or "",
                         deadline = fm.deadline or "",
                         status = fm.status or "", snoozed = snoozed,
-                        due_date = fm.due_date or "",
+                        due_date = fm.due_date or "", tags = tags,
                     })
                 end
             end
@@ -249,9 +317,10 @@ end
 -- ---------------------------------------------------------------------
 local agenda_buf = nil
 local show_snoozed = false  -- agenda toggle: include snoozed items?
+local filter_tag = nil      -- active tag filter (nil = show all)
 
 local function render_agenda()
-    local items, unprocessed, snoozing = collect(show_snoozed)
+    local items, unprocessed, snoozing = collect(show_snoozed, filter_tag)
     local lines = {}
     local line_targets = {}  -- maps buffer line number -> file path
     local header_rows = {}   -- ordered list of item-header line numbers
@@ -260,6 +329,20 @@ local function render_agenda()
     table.insert(lines, string.format(
         "Fleeting: %d unprocessed · %d snoozing   [%s — 'z' to toggle]",
         unprocessed, snoozing, mode))
+
+    -- Tag bar: list all configured tags, marking the active filter. 'f' cycles.
+    local tag_parts = {}
+    for _, t in ipairs(TAGS) do
+        if t == filter_tag then
+            table.insert(tag_parts, "[" .. t .. "]")  -- active
+        else
+            table.insert(tag_parts, t)
+        end
+    end
+    local filter_label = filter_tag and ("filtering: " .. filter_tag) or "all"
+    table.insert(lines, string.format(
+        "Tags: %s   (%s — 'f' to cycle)",
+        table.concat(tag_parts, " · "), filter_label))
     table.insert(lines, string.rep("─", 60))
     table.insert(lines, "")
 
@@ -287,7 +370,15 @@ local function render_agenda()
             local st = (it.status ~= "" and it.status) or "todo"
             extra = string.format("  💤 %s until %s", st, it.due_date)
         end
-        local header = string.format("%s %s  (%s)%s%s", tag, it.title, prio, dl, extra)
+        -- Inline tag display in your :tag: convention
+        local tagstr = ""
+        if it.tags and #it.tags > 0 then
+            local wrapped = {}
+            for _, t in ipairs(it.tags) do table.insert(wrapped, ":" .. t .. ":") end
+            tagstr = "  " .. table.concat(wrapped, " ")
+        end
+        local header = string.format("%s %s  (%s)%s%s%s",
+            tag, it.title, prio, dl, tagstr, extra)
         table.insert(lines, header)
         line_targets[#lines] = it.file
         table.insert(header_rows, #lines)
@@ -379,6 +470,23 @@ local function render_agenda()
         show_snoozed = not show_snoozed
         render_agenda()
     end, opts)
+    -- 'f' cycles the tag filter: nil -> TAGS[1] -> TAGS[2] -> ... -> nil.
+    vim.keymap.set("n", "f", function()
+        if filter_tag == nil then
+            filter_tag = TAGS[1]
+        else
+            local idx = nil
+            for i, t in ipairs(TAGS) do
+                if t == filter_tag then idx = i break end
+            end
+            if idx == nil or idx >= #TAGS then
+                filter_tag = nil          -- past the end -> clear
+            else
+                filter_tag = TAGS[idx + 1]
+            end
+        end
+        render_agenda()
+    end, opts)
     vim.keymap.set("n", "q", function() vim.cmd("bdelete") end, opts)
 
     return agenda_buf
@@ -461,7 +569,15 @@ local function run_wizard(default_name, on_complete, on_abort)
         function(priority)
             if not priority then return on_abort() end
 
-            -- Step 4: due date (start/snooze date)
+            -- Step 4: tag (single choice, with a "(none)" option)
+            local tag_choices = { "(none)" }
+            for _, t in ipairs(TAGS) do table.insert(tag_choices, t) end
+            vim.ui.select(tag_choices, { prompt = "Tag:" },
+            function(tag_choice)
+                if not tag_choice then return on_abort() end
+                local tag = (tag_choice == "(none)") and "" or tag_choice
+
+            -- Step 5: due date (start/snooze date)
             local due_choices = {
                 "Today", "Tomorrow", "In 3 days", "In a week", "Pick a date…",
             }
@@ -470,7 +586,7 @@ local function run_wizard(default_name, on_complete, on_abort)
                 if not due_choice then return on_abort() end
 
                 local function with_due(due_date)
-                    -- Step 5: deadline (hard due-by) with a None option
+                    -- Step 6: deadline (hard due-by) with a None option
                     local dl_choices = {
                         "None", "Today", "Tomorrow", "In 3 days",
                         "In a week", "Pick a date…",
@@ -486,6 +602,7 @@ local function run_wizard(default_name, on_complete, on_abort)
                                 priority = priority,
                                 due_date = due_date,
                                 deadline = deadline,
+                                tag = tag,
                             })
                         end
 
@@ -525,6 +642,7 @@ local function run_wizard(default_name, on_complete, on_abort)
                     end)
                 end
             end)
+            end)  -- close function(tag_choice)
         end)
     end)
     end)  -- close function(name)
@@ -543,14 +661,14 @@ local function promote_fleeting()
 
     run_wizard(nil, function(choice)
         apply_promotion(bufnr, file, choice.marker_new, choice.priority,
-            choice.due_date, choice.deadline, choice.name)
+            choice.due_date, choice.deadline, choice.name, choice.tag)
     end)
 end
 
 -- Transform the buffer in place: keep title/created_date/due_date/snooze_count,
 -- add status/priority/deadline, swap the marker, seed a Steps section for
 -- projects. Writes the file.
-function apply_promotion(bufnr, file, marker_new, priority, due_date, deadline, name)
+function apply_promotion(bufnr, file, marker_new, priority, due_date, deadline, name, tag)
     local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
 
     -- Locate frontmatter fences.
@@ -585,6 +703,7 @@ function apply_promotion(bufnr, file, marker_new, priority, due_date, deadline, 
     set_key("priority", priority)
     set_key("due_date", due_date)
     set_key("deadline", deadline)
+    set_key("tags", (tag and tag ~= "") and (":" .. tag .. ":") or "")
     -- ensure snooze_count exists
     set_key("snooze_count",
         (function()
@@ -671,6 +790,8 @@ local function create_note_file(choice)
         "priority: " .. choice.priority,
         "due_date: " .. choice.due_date,
         "deadline: " .. choice.deadline,
+        "tags: " .. ((choice.tag and choice.tag ~= "")
+            and (":" .. choice.tag .. ":") or ""),
         "snooze_count: 0",
         "---",
     }, body), "\n")
