@@ -1,18 +1,19 @@
-
 -- ~/.config/nvim/lua/config/lsp.lua
-local lspconfig = require('lspconfig')
---
+
 -- disable inline error text
 vim.diagnostic.config({
   virtual_text = false,
   signs = false,
   underline = true,
-  float = { border = 'none'},
+  float = { border = 'none' },
 })
 
-lspconfig.pyright.setup {}      -- Python
-lspconfig.lua_ls.setup {        -- Lua
-  cmd = {"/home/doogan/lua-language-server/bin/lua-language-server"},
+-- Python
+vim.lsp.config('pyright', {})
+
+-- Lua
+vim.lsp.config('lua_ls', {
+  cmd = { "/home/doogan/lua-language-server/bin/lua-language-server" },
   settings = {
     Lua = {
       diagnostics = {
@@ -20,4 +21,6 @@ lspconfig.lua_ls.setup {        -- Lua
       }
     }
   }
-}
+})
+
+vim.lsp.enable({ 'pyright', 'lua_ls' })
