@@ -6,10 +6,16 @@
 -- the same buffer-local snooze keymaps (ss / sm / sl). Pure markdown — the
 -- files on disk are the single source of truth; the agenda is just a query.
 --
--- THREE NOTE TYPES (distinguished by a body marker line):
+-- NOTE TYPES (distinguished by a body marker line):
 --   :fleeting:   raw capture (your existing flow)
 --   :project:    frontmatter + ordered "- [ ]" steps; next step = first unchecked
 --   :ticket:     standalone action; the ticket itself is the step
+--
+-- The wizard also offers "Shopping list" as a type: it short-circuits (no
+-- priority/tag/date prompts) and appends the name as a "- [ ]" checkbox to
+-- <vault>/shopping.md (created with a "# Shopping" heading if missing). This
+-- is NOT a note and never appears in the agenda. Promoting a fleeting note to
+-- a shopping item deletes the fleeting note afterward.
 --
 -- FRONTMATTER on projects + tickets:
 --   title, status (todo/doing/blocked/done), priority (A/B/C),
@@ -28,10 +34,11 @@
 --   sorted    -> by deadline (overdue/soonest first), then priority
 --   <CR>      -> jump to file ; r -> refresh ; q -> close
 --
--- AUTO-ARCHIVE: when status: done, the file is moved to <vault>/done/ — but
---   only once you LEAVE the buffer (BufUnload), so the live buffer is never
---   touched or re-pointed. A missed move (crash) is cosmetic: the agenda
---   filters status: done regardless.
+-- AUTO-ARCHIVE: when status is terminal (done or missed), the file is moved to
+--   <vault>/done/ — but only once you LEAVE the buffer (BufUnload), so the live
+--   buffer is never touched or re-pointed. A missed move (crash) is cosmetic:
+--   the agenda filters terminal statuses regardless. "missed" is kept for
+--   post-tracking — it archives alongside "done" but records a slip, not a win.
 --
 -- PROMOTION: <leader>zP on a fleeting note -> guided wizard (type, priority,
 --   due date, deadline). Transforms IN PLACE (same file, backlinks survive).
@@ -42,6 +49,8 @@
 -- ---------------------------------------------------------------------
 --   GLOBAL
 --     <leader>za   open the agenda (also :Agenda)
+--     <leader>zr   new recurring ticket (master note; also :RecurNew)
+--                  [requires the companion zettel_recur.lua module]
 --
 --   IN THE AGENDA BUFFER
 --     <Tab>        jump to next item (wraps)
@@ -53,7 +62,7 @@
 --     q            close the agenda
 --
 --   ON A FLEETING NOTE
---     <leader>zP   promote → project/ticket (name, type, priority, dates; Esc aborts)
+--     <leader>zP   promote → project / ticket / shopping list (Esc aborts)
 --     ss / sm / sl snooze 1 / 3 / 7 days   (from your existing config)
 --     <leader>zp   process next due fleeting note (your existing config)
 --
@@ -64,6 +73,8 @@
 --
 --   ON A PROJECT / TICKET
 --     ss / sm / sl snooze 1 / 3 / 7 days (rewrites due_date forward)
+--     dn           mark done + save  (archives to done/ on buffer close)
+--     dm           mark missed + save (archives to done/ on buffer close)
 --     (set "status: done" + leave the buffer → auto-archived to done/)
 -- =====================================================================
 
@@ -72,6 +83,10 @@ local M = {}
 -- Reuse the same vault path as the fleeting-note config.
 local vault = vim.fn.expand("~/zettelkasten/")
 local done_dir = vault .. "done/"
+local shopping_file = vault .. "shopping.md"
+
+-- Forward declaration: defined later, used by the wizard completion handlers.
+local append_shopping
 
 local STATUSES   = { "todo", "doing", "blocked", "done" }
 local PRIORITIES = { "A", "B", "C" }
@@ -79,7 +94,7 @@ local PRIORITIES = { "A", "B", "C" }
 -- Your tag vocabulary. Edit this list to add/remove tags. They show up in the
 -- promotion/batch wizard as a single-choice step, and the agenda cycles
 -- through them with `f` to filter. Keep them short and lowercase.
-local TAGS = {"farm", "errands", "home"}
+local TAGS = { "farm", "errands", "home" }
 
 -- ---------------------------------------------------------------------
 -- Small date helpers (all dates are plain YYYY-MM-DD strings)
@@ -138,18 +153,25 @@ local function read_note(file)
     return fm, marker, body
 end
 
--- Is an item snoozed right now? (status ~= done AND due_date in the future)
+-- Terminal statuses: items in these states drop off the agenda and get
+-- archived to done/. "done" = completed, "missed" = slipped (kept for tracking).
+local function is_terminal(fm)
+    local s = fm.status or ""
+    return s == "done" or s == "missed"
+end
+
+-- Is an item snoozed right now? (not terminal AND due_date in the future)
 local function is_snoozed(fm)
-    if (fm.status or "") == "done" then return false end
+    if is_terminal(fm) then return false end
     local due = fm.due_date or ""
     if due == "" then return false end
     return date_before(today_str(), due)  -- today < due
 end
 
 -- Is an item visible in the (default) agenda right now?
--- Visible when: status ~= done AND (due_date empty OR due_date <= today).
+-- Visible when: not terminal AND (due_date empty OR due_date <= today).
 local function is_active(fm)
-    if (fm.status or "") == "done" then return false end
+    if is_terminal(fm) then return false end
     local due = fm.due_date or ""
     if due == "" then return true end
     return not date_before(today_str(), due)  -- due <= today
@@ -293,19 +315,22 @@ local function collect(show_snoozed, filter_tag)
                         deadline = fm.deadline or "",
                         status = fm.status or "", snoozed = snoozed,
                         due_date = fm.due_date or "", tags = tags,
+                        recur_id = fm.recur_id or "",
                     })
                 end
             end
         end
     end
 
-    -- Sort by priority, then deadline (soonest/overdue first) as tiebreaker,
-    -- then title. Section grouping is applied at render time.
+    -- Sort by priority, then deadline, then due_date (orders recurring
+    -- instances chronologically), then title. Section grouping at render time.
     table.sort(items, function(a, b)
         local pa, pb = prio_rank(a.priority), prio_rank(b.priority)
         if pa ~= pb then return pa < pb end
         local ka, kb = deadline_key(a.deadline), deadline_key(b.deadline)
         if ka ~= kb then return ka < kb end
+        local da, db = deadline_key(a.due_date), deadline_key(b.due_date)
+        if da ~= db then return da < db end
         return a.title < b.title
     end)
 
@@ -320,6 +345,10 @@ local show_snoozed = false  -- agenda toggle: include snoozed items?
 local filter_tag = nil      -- active tag filter (nil = show all)
 
 local function render_agenda()
+    -- Lazy recurring-ticket generation: spawn any due instances before scanning.
+    -- Safe no-op if the recurrence module isn't installed.
+    pcall(function() require("config.tk_functions.zettel_recur").generate() end)
+
     local items, unprocessed, snoozing = collect(show_snoozed, filter_tag)
     local lines = {}
     local line_targets = {}  -- maps buffer line number -> file path
@@ -377,8 +406,14 @@ local function render_agenda()
             for _, t in ipairs(it.tags) do table.insert(wrapped, ":" .. t .. ":") end
             tagstr = "  " .. table.concat(wrapped, " ")
         end
-        local header = string.format("%s %s  (%s)%s%s%s",
-            tag, it.title, prio, dl, tagstr, extra)
+        -- Recurring instances (have a recur_id) show their occurrence date so a
+        -- pileup of identical dailies is distinguishable and reads in order.
+        local recur = ""
+        if it.recur_id and it.recur_id ~= "" and it.due_date ~= "" then
+            recur = "  ↻ " .. it.due_date
+        end
+        local header = string.format("%s %s  (%s)%s%s%s%s",
+            tag, it.title, prio, dl, recur, tagstr, extra)
         table.insert(lines, header)
         line_targets[#lines] = it.file
         table.insert(header_rows, #lines)
@@ -522,7 +557,9 @@ vim.api.nvim_create_autocmd("BufUnload", {
         if vim.fn.filereadable(file) == 0 then return end
 
         -- Re-read from disk (the buffer is going away; disk is source of truth).
-        if file_status(file) ~= "done" then return end
+        -- Archive on either terminal status (done or missed).
+        local st = file_status(file)
+        if st ~= "done" and st ~= "missed" then return end
 
         ensure_done_dir()
         local name = vim.fn.fnamemodify(file, ":t")
@@ -559,9 +596,17 @@ local function run_wizard(default_name, on_complete, on_abort)
         name = name:gsub("%s+$", "")
 
     -- Step 2: type
-    vim.ui.select({ "Project", "Ticket" }, { prompt = "Type:" },
+    vim.ui.select({ "Project", "Ticket", "Shopping list" }, { prompt = "Type:" },
     function(kind_choice)
         if not kind_choice then return on_abort() end
+
+        -- Shopping list short-circuits: no further prompts. The name is the
+        -- item; the completion handler appends it to the shopping file.
+        if kind_choice == "Shopping list" then
+            on_complete({ marker_new = ":shopping:", name = name })
+            return
+        end
+
         local marker_new = (kind_choice == "Project") and ":project:" or ":ticket:"
 
         -- Step 3: priority
@@ -660,6 +705,16 @@ local function promote_fleeting()
     end
 
     run_wizard(nil, function(choice)
+        if choice.marker_new == ":shopping:" then
+            if append_shopping(choice.name) then
+                -- The fleeting note has served its purpose: delete file + buffer.
+                vim.cmd("bdelete!")
+                os.remove(file)
+                vim.notify("Added to shopping list: " .. choice.name,
+                    vim.log.levels.INFO)
+            end
+            return
+        end
         apply_promotion(bufnr, file, choice.marker_new, choice.priority,
             choice.due_date, choice.deadline, choice.name, choice.tag)
     end)
@@ -743,6 +798,37 @@ function apply_promotion(bufnr, file, marker_new, priority, due_date, deadline, 
         label, priority, due_date,
         deadline ~= "" and (", deadline " .. deadline) or ""),
         vim.log.levels.INFO)
+end
+
+-- ---------------------------------------------------------------------
+-- Create a fresh project/ticket file from scratch (used by batch capture).
+-- Mirrors the fleeting-note filename convention: <date>_<slug>.md
+-- ---------------------------------------------------------------------
+-- ---------------------------------------------------------------------
+-- Append an item to the shopping list file as a "- [ ] item" checkbox.
+-- Creates the file with a "# Shopping" heading if it doesn't exist yet.
+-- Returns true on success.
+-- ---------------------------------------------------------------------
+function append_shopping(item)
+    -- Create with a heading if missing.
+    if vim.fn.filereadable(shopping_file) == 0 then
+        local fh = io.open(shopping_file, "w")
+        if not fh then
+            vim.notify("Failed to create " .. shopping_file, vim.log.levels.ERROR)
+            return false
+        end
+        fh:write("# Shopping\n\n")
+        fh:close()
+    end
+    -- Append the checkbox to the end.
+    local fh = io.open(shopping_file, "a")
+    if not fh then
+        vim.notify("Failed to write " .. shopping_file, vim.log.levels.ERROR)
+        return false
+    end
+    fh:write("- [ ] " .. item .. "\n")
+    fh:close()
+    return true
 end
 
 -- ---------------------------------------------------------------------
@@ -837,6 +923,15 @@ local function batch_from_lines(lines)
             vim.log.levels.INFO)
         run_wizard(line,
             function(choice)  -- on_complete
+                if choice.marker_new == ":shopping:" then
+                    if append_shopping(choice.name) then
+                        created = created + 1
+                        vim.notify("Added to shopping list: " .. choice.name,
+                            vim.log.levels.INFO)
+                    end
+                    vim.schedule(function() process(idx + 1) end)
+                    return
+                end
                 local ok, name = create_note_file(choice)
                 if ok then
                     created = created + 1
@@ -911,6 +1006,33 @@ vim.api.nvim_create_autocmd("BufReadPost", {
             vim.keymap.set("n", "ss", function() snooze(1) end, opts)
             vim.keymap.set("n", "sm", function() snooze(3) end, opts)
             vim.keymap.set("n", "sl", function() snooze(7) end, opts)
+
+            -- Mark this project/ticket with a terminal status and save. On
+            -- buffer leave, the auto-archive autocmd moves the file to done/
+            -- (buffer untouched). Both "done" and "missed" are terminal: they
+            -- drop off the agenda and archive to the same folder.
+            local function mark_status(new_status)
+                local b = vim.api.nvim_get_current_buf()
+                local lines = vim.api.nvim_buf_get_lines(b, 0, -1, false)
+                local set = false
+                for i, line in ipairs(lines) do
+                    if line:match("^status:") then
+                        lines[i] = "status: " .. new_status
+                        set = true
+                        break
+                    end
+                end
+                if not set then
+                    vim.notify("No status field found.", vim.log.levels.WARN)
+                    return
+                end
+                vim.api.nvim_buf_set_lines(b, 0, -1, false, lines)
+                vim.cmd("write")
+                vim.notify("Marked " .. new_status ..
+                    " (archives on buffer close)", vim.log.levels.INFO)
+            end
+            vim.keymap.set("n", "dn", function() mark_status("done") end, opts)
+            vim.keymap.set("n", "dm", function() mark_status("missed") end, opts)
         end
     end,
 })

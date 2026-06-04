@@ -9,6 +9,7 @@ require("config.keybinds_ext")
 require("config.keybinds_random_rolls")
 require("config.tk_functions.note_processing")
 require("config.tk_functions.zettel_pm")
+require("config.tk_functions.zettel_recur")
 require("config.filetype")
 require("config.lsp")
 
