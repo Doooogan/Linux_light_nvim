@@ -1,5 +1,5 @@
 -- This multiplies the current line by 1% to get the next workout parameter
-vim.keymap.set('n', '<leader>th', function()
+vim.keymap.set('n', '<leader>hs', function()
   local row = vim.api.nvim_win_get_cursor(0)[1]
   local line = vim.api.nvim_get_current_line()
 
