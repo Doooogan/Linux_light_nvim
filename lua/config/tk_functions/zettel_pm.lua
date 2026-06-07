@@ -344,15 +344,88 @@ local agenda_buf = nil
 local show_snoozed = false  -- agenda toggle: include snoozed items?
 local filter_tag = nil      -- active tag filter (nil = show all)
 
+-- Highlight namespace + groups. Linked to sensible defaults so they pick up
+-- the user's colorscheme; override these with your own :highlight commands if
+-- you want specific shades.
+local agenda_ns = vim.api.nvim_create_namespace("zettel_agenda")
+local function setup_highlights()
+    -- define-default = true: don't clobber user overrides if already set.
+    vim.api.nvim_set_hl(0, "ZettelDueOverdue", { fg = "#e06c75", bold = true })  -- red
+    vim.api.nvim_set_hl(0, "ZettelDueSoon",    { fg = "#e5a070" })               -- orange
+    vim.api.nvim_set_hl(0, "ZettelDueOk",      { fg = "#98c379" })               -- green
+    vim.api.nvim_set_hl(0, "ZettelPrio",       { fg = "#61afef", bold = true })  -- priority
+    vim.api.nvim_set_hl(0, "ZettelTag",        { fg = "#56b6c2" })               -- tags
+    vim.api.nvim_set_hl(0, "ZettelSnooze",     { fg = "#7f848e", italic = true })-- dim
+    vim.api.nvim_set_hl(0, "ZettelRecur",      { fg = "#c678dd" })               -- recur date
+    vim.api.nvim_set_hl(0, "ZettelSection",    { fg = "#abb2bf", bold = true })  -- headers
+    vim.api.nvim_set_hl(0, "ZettelType",       { fg = "#5c6370" })               -- [P]/[T]
+end
+
+-- Display width of a string (counts a multibyte UTF-8 char as one column;
+-- good enough for the emoji/box chars used here). Byte length is wrong for
+-- padding because Lua #s counts bytes, not display columns.
+local function disp_width(s)
+    local _, count = s:gsub("[%z\1-\127\194-\244]", "")
+    return count
+end
+
+-- Right-pad a string to `width` display columns (no truncation here).
+local function pad_to(s, width)
+    local w = disp_width(s)
+    if w >= width then return s end
+    return s .. string.rep(" ", width - w)
+end
+
+-- Truncate to `width` display columns, adding … if cut. UTF-8 safe: walks
+-- character boundaries so it never splits a multibyte char.
+local function truncate(s, width)
+    if disp_width(s) <= width then return s end
+    local out, count = {}, 0
+    for char in s:gmatch("[%z\1-\127\194-\244][\128-\191]*") do
+        if count >= width - 1 then break end
+        table.insert(out, char)
+        count = count + 1
+    end
+    return table.concat(out) .. "…"
+end
+
+-- Days from today until a YYYY-MM-DD date (negative = past). nil if no date.
+local function days_until(date_str)
+    if not date_str or date_str == "" then return nil end
+    local y, m, d = date_str:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)$")
+    if not y then return nil end
+    local target = os.time({ year = tonumber(y), month = tonumber(m),
+        day = tonumber(d), hour = 12 })
+    local now = os.time({ year = tonumber(os.date("%Y")),
+        month = tonumber(os.date("%m")), day = tonumber(os.date("%d")),
+        hour = 12 })
+    return math.floor((target - now) / 86400 + 0.5)
+end
+
+-- Classify a deadline into a highlight group.
+-- THRESHOLDS (edit here): overdue if due today or earlier; soon if within
+-- 3 days; ok beyond that.
+local function deadline_hl(date_str)
+    local d = days_until(date_str)
+    if d == nil then return nil end
+    if d <= 0 then return "ZettelDueOverdue" end   -- today or past
+    if d <= 3 then return "ZettelDueSoon" end       -- within 3 days
+    return "ZettelDueOk"
+end
+
+local TITLE_WIDTH = 50  -- title column width (truncated past this)
+
 local function render_agenda()
     -- Lazy recurring-ticket generation: spawn any due instances before scanning.
     -- Safe no-op if the recurrence module isn't installed.
     pcall(function() require("config.tk_functions.zettel_recur").generate() end)
 
+    setup_highlights()
     local items, unprocessed, snoozing = collect(show_snoozed, filter_tag)
     local lines = {}
     local line_targets = {}  -- maps buffer line number -> file path
     local header_rows = {}   -- ordered list of item-header line numbers
+    local highlights = {}    -- {line0, hl_group, col_start, col_end} (0-indexed)
 
     local mode = show_snoozed and "showing snoozed" or "hiding snoozed"
     table.insert(lines, string.format(
@@ -389,32 +462,66 @@ local function render_agenda()
         end
     end
 
-    -- Render one item: appends its line(s) and records jump targets / headers.
+    -- Render one item: appends its line(s), records jump targets / headers,
+    -- and records highlight spans (byte offsets) for color.
     local function emit_item(it)
         local prio = (it.priority ~= "" and it.priority) or "-"
-        local dl   = (it.deadline ~= "" and ("  ⏰ due " .. it.deadline)) or ""
-        local tag  = (it.kind == "project") and "[P]" or "[T]"
-        local extra = ""
-        if it.snoozed then
-            local st = (it.status ~= "" and it.status) or "todo"
-            extra = string.format("  💤 %s until %s", st, it.due_date)
+        local tagmark = (it.kind == "project") and "[P]" or "[T]"
+
+        -- Build the line in segments, tracking byte position for highlights.
+        -- Layout: "[T] <title padded to TITLE_WIDTH>  (P)  <deadline>  <recur>  <tags>  <snooze>"
+        local segments = {}   -- list of {text, hl|nil}
+        local function seg(text, hl) table.insert(segments, { text = text, hl = hl }) end
+
+        seg(tagmark .. " ", "ZettelType")
+        local disp_title = truncate(it.title, TITLE_WIDTH)
+        seg(disp_title, nil)
+        -- Pad to TITLE_WIDTH + a 2-space gutter. truncate() guarantees the
+        -- title is <= TITLE_WIDTH, so this is always >= 2 (no max() needed,
+        -- which previously over-padded exactly-full titles by one column).
+        seg(string.rep(" ", (TITLE_WIDTH - disp_width(disp_title)) + 2), nil)
+
+        seg("(" .. prio .. ")", "ZettelPrio")
+
+        -- Deadline column (fixed slot so following columns align even when blank)
+        local dl_text, dl_hl = "", nil
+        if it.deadline and it.deadline ~= "" then
+            dl_text = "⏰ " .. it.deadline
+            dl_hl = deadline_hl(it.deadline)
         end
-        -- Inline tag display in your :tag: convention
-        local tagstr = ""
+        seg("  ", nil)
+        seg(pad_to(dl_text, 16), dl_hl)  -- "⏰ 2026-06-10" ~13 cols, pad to 16
+
+        -- Recurring occurrence date
+        if it.recur_id and it.recur_id ~= "" and it.due_date ~= "" then
+            seg("↻ " .. it.due_date .. "  ", "ZettelRecur")
+        end
+
+        -- Tags
         if it.tags and #it.tags > 0 then
             local wrapped = {}
             for _, t in ipairs(it.tags) do table.insert(wrapped, ":" .. t .. ":") end
-            tagstr = "  " .. table.concat(wrapped, " ")
+            seg(table.concat(wrapped, " ") .. "  ", "ZettelTag")
         end
-        -- Recurring instances (have a recur_id) show their occurrence date so a
-        -- pileup of identical dailies is distinguishable and reads in order.
-        local recur = ""
-        if it.recur_id and it.recur_id ~= "" and it.due_date ~= "" then
-            recur = "  ↻ " .. it.due_date
+
+        -- Snooze annotation
+        if it.snoozed then
+            local st = (it.status ~= "" and it.status) or "todo"
+            seg(string.format("💤 %s until %s", st, it.due_date), "ZettelSnooze")
         end
-        local header = string.format("%s %s  (%s)%s%s%s%s",
-            tag, it.title, prio, dl, recur, tagstr, extra)
-        table.insert(lines, header)
+
+        -- Assemble line + highlight spans.
+        local line = ""
+        local line0 = #lines  -- 0-indexed line number this will occupy
+        for _, s in ipairs(segments) do
+            local start_byte = #line
+            line = line .. s.text
+            if s.hl then
+                table.insert(highlights, { line0, s.hl, start_byte, #line })
+            end
+        end
+
+        table.insert(lines, line)
         line_targets[#lines] = it.file
         table.insert(header_rows, #lines)
         if it.kind == "project" and it.step then
@@ -428,6 +535,7 @@ local function render_agenda()
     local function emit_section(title, bucket, empty_msg)
         table.insert(lines, "")
         table.insert(lines, "━━ " .. title .. " ━━")
+        table.insert(highlights, { #lines - 1, "ZettelSection", 0, #("━━ " .. title .. " ━━") })
         table.insert(lines, "")
         if #bucket == 0 then
             if empty_msg then table.insert(lines, "  " .. empty_msg) end
@@ -451,11 +559,19 @@ local function render_agenda()
         vim.bo[agenda_buf].buftype = "nofile"
         vim.bo[agenda_buf].bufhidden = "hide"
         vim.bo[agenda_buf].swapfile = false
-        vim.bo[agenda_buf].filetype = "markdown"
+        -- No filetype: we apply our own highlights and don't want markdown
+        -- syntax competing with them.
     end
 
     vim.bo[agenda_buf].modifiable = true
     vim.api.nvim_buf_set_lines(agenda_buf, 0, -1, false, lines)
+    -- Clear old highlights, then apply the recorded spans.
+    vim.api.nvim_buf_clear_namespace(agenda_buf, agenda_ns, 0, -1)
+    for _, h in ipairs(highlights) do
+        local line0, group, c0, c1 = h[1], h[2], h[3], h[4]
+        pcall(vim.api.nvim_buf_add_highlight, agenda_buf, agenda_ns,
+            group, line0, c0, c1)
+    end
     vim.bo[agenda_buf].modifiable = false
 
     -- Stash the line->file map on the buffer for the <CR> handler.
