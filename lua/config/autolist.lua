@@ -16,7 +16,7 @@ vim.api.nvim_create_autocmd("FileType", {
     --vim.keymap.set("n", "<leader>d", "0f[di[ix<esc>0", opts)
 
 
-    vim.keymap.set("n", "<leader>d", "<cmd>AutolistToggleCheckbox<cr><CR>", opts)
+    vim.keymap.set("n", "<leader>bb", "<cmd>AutolistToggleCheckbox<cr><CR>", opts)
     --vim.keymap.set("n", "<C-r>", "<cmd>AutolistRecalculate<cr>", opts)
 
     vim.keymap.set("n", ">>", ">><cmd>AutolistRecalculate<cr>", opts)
@@ -28,7 +28,7 @@ vim.api.nvim_create_autocmd("FileType", {
     vim.keymap.set("n", "<leader>cn", require("autolist").cycle_next_dr, { expr = true, buffer = true })
     vim.keymap.set("n", "<leader>cp", require("autolist").cycle_prev_dr, { expr = true, buffer = true })
 
-    vim.keymap.set("n", "<leader>b", function()
+    vim.keymap.set("n", "<leader>bc", function()
       local line = vim.api.nvim_get_current_line()
       local bullet_pattern = "^(%s*)([-*+])%s+"
       local checkbox_pattern = "^(%s*)([-*+])%s+%[.%]%s+"
