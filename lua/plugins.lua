@@ -39,7 +39,7 @@ packer.startup(function(use)
   use 'lunarvim/darkplus.nvim'  -- Optional, in case you switch themes manually
 
   use {
-    'renerocksai/telekasten.nvim',
+    'nvim-telekasten/telekasten.nvim',
     requires = {'nvim-telescope/telescope.nvim'},
     config = function()
       require('config.telekasten_config').setup()
@@ -68,6 +68,7 @@ packer.startup(function(use)
 
   use {
     'nvim-treesitter/nvim-treesitter',
+    branch = 'main',
     run = ':TSUpdate',
     config = function()
       require('config.treesitter')

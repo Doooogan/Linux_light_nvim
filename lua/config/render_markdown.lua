@@ -4,7 +4,7 @@
 require("render-markdown").setup({
   enabled = true,
   file_types = { "markdown", "telekasten" }, -- include 'telekasten' if needed
-  preset = "default", -- try "minimal", "clean", or "none" as well
+  preset = "obsidian", -- try "minimal", "clean", or "none" as well
   completions = {
     lsp = { enabled = true }
   }
