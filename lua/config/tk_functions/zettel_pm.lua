@@ -277,10 +277,14 @@ local function collect(show_snoozed, filter_tag)
         local fm, marker = read_note(file)
 
         if marker == "fleeting" then
+            -- "Unprocessed" = ready to process now: no start_date, OR a
+            -- start_date that has arrived (today or past). "Snoozing" = a
+            -- start_date still in the future. This matches what <leader>zp
+            -- actually serves up (notes due today or earlier).
             local due = fm.start_date or ""
-            if due == "" then
+            if due == "" or not date_before(today, due) then
                 fleeting_unprocessed = fleeting_unprocessed + 1
-            elseif date_before(today, due) then
+            else
                 fleeting_snoozing = fleeting_snoozing + 1
             end
 
