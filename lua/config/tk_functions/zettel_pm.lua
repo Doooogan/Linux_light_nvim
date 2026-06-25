@@ -2,7 +2,7 @@
 -- Lightweight project / ticketing layer for a Telekasten markdown vault
 -- =====================================================================
 -- Slots in alongside your existing fleeting-note config. It reuses the
--- same `vault` path, the same `due_date` / `snooze_count` frontmatter, and
+-- same `vault` path, the same `start_date` / `snooze_count` frontmatter, and
 -- the same buffer-local snooze keymaps (ss / sm / sl). Pure markdown — the
 -- files on disk are the single source of truth; the agenda is just a query.
 --
@@ -20,17 +20,17 @@
 -- FRONTMATTER on projects + tickets:
 --   title, status (todo/doing/blocked/done), priority (A/B/C),
 --   deadline (hard "must be done by", optional),
---   due_date  (start/snooze date — empty or past = visible, future = hidden),
+--   start_date  (start/snooze date — empty or past = visible, future = hidden),
 --   tags      (colon-wrapped ":tag:" syntax, chosen from the TAGS list below),
 --   snooze_count
 --
 -- AGENDA (read-only scratch buffer):
 --   top line  -> "Fleeting: N unprocessed · M snoozing"
---                unprocessed = fleeting with empty due_date
---                snoozing    = fleeting with future due_date
+--                unprocessed = fleeting with empty start_date
+--                snoozing    = fleeting with future start_date
 --   body      -> active projects (title + next unchecked step)
 --                active tickets (title)
---   hidden    -> done / future due_date / fully-checked projects
+--   hidden    -> done / future start_date / fully-checked projects
 --   sorted    -> by deadline (overdue/soonest first), then priority
 --   <CR>      -> jump to file ; r -> refresh ; q -> close
 --
@@ -72,7 +72,7 @@
 --                  Esc on a line skips just that line. Source lines are kept.
 --
 --   ON A PROJECT / TICKET
---     ss / sm / sl snooze 1 / 3 / 7 days (rewrites due_date forward)
+--     ss / sm / sl snooze 1 / 3 / 7 days (rewrites start_date forward)
 --     dn           mark done + save  (archives to done/ on buffer close)
 --     dm           mark missed + save (archives to done/ on buffer close)
 --     (set "status: done" + leave the buffer → auto-archived to done/)
@@ -160,19 +160,19 @@ local function is_terminal(fm)
     return s == "done" or s == "missed"
 end
 
--- Is an item snoozed right now? (not terminal AND due_date in the future)
+-- Is an item snoozed right now? (not terminal AND start_date in the future)
 local function is_snoozed(fm)
     if is_terminal(fm) then return false end
-    local due = fm.due_date or ""
+    local due = fm.start_date or ""
     if due == "" then return false end
     return date_before(today_str(), due)  -- today < due
 end
 
 -- Is an item visible in the (default) agenda right now?
--- Visible when: not terminal AND (due_date empty OR due_date <= today).
+-- Visible when: not terminal AND (start_date empty OR start_date <= today).
 local function is_active(fm)
     if is_terminal(fm) then return false end
-    local due = fm.due_date or ""
+    local due = fm.start_date or ""
     if due == "" then return true end
     return not date_before(today_str(), due)  -- due <= today
 end
@@ -277,7 +277,7 @@ local function collect(show_snoozed, filter_tag)
         local fm, marker = read_note(file)
 
         if marker == "fleeting" then
-            local due = fm.due_date or ""
+            local due = fm.start_date or ""
             if due == "" then
                 fleeting_unprocessed = fleeting_unprocessed + 1
             elseif date_before(today, due) then
@@ -305,7 +305,7 @@ local function collect(show_snoozed, filter_tag)
                             step = step, priority = fm.priority or "",
                             deadline = fm.deadline or "",
                             status = fm.status or "", snoozed = snoozed,
-                            due_date = fm.due_date or "", tags = tags,
+                            start_date = fm.start_date or "", tags = tags,
                         })
                     end
                 else
@@ -314,7 +314,7 @@ local function collect(show_snoozed, filter_tag)
                         step = nil, priority = fm.priority or "",
                         deadline = fm.deadline or "",
                         status = fm.status or "", snoozed = snoozed,
-                        due_date = fm.due_date or "", tags = tags,
+                        start_date = fm.start_date or "", tags = tags,
                         recur_id = fm.recur_id or "",
                     })
                 end
@@ -322,14 +322,14 @@ local function collect(show_snoozed, filter_tag)
         end
     end
 
-    -- Sort by priority, then deadline, then due_date (orders recurring
+    -- Sort by priority, then deadline, then start_date (orders recurring
     -- instances chronologically), then title. Section grouping at render time.
     table.sort(items, function(a, b)
         local pa, pb = prio_rank(a.priority), prio_rank(b.priority)
         if pa ~= pb then return pa < pb end
         local ka, kb = deadline_key(a.deadline), deadline_key(b.deadline)
         if ka ~= kb then return ka < kb end
-        local da, db = deadline_key(a.due_date), deadline_key(b.due_date)
+        local da, db = deadline_key(a.start_date), deadline_key(b.start_date)
         if da ~= db then return da < db end
         return a.title < b.title
     end)
@@ -493,8 +493,8 @@ local function render_agenda()
         seg(pad_to(dl_text, 16), dl_hl)  -- "⏰ 2026-06-10" ~13 cols, pad to 16
 
         -- Recurring occurrence date
-        if it.recur_id and it.recur_id ~= "" and it.due_date ~= "" then
-            seg("↻ " .. it.due_date .. "  ", "ZettelRecur")
+        if it.recur_id and it.recur_id ~= "" and it.start_date ~= "" then
+            seg("↻ " .. it.start_date .. "  ", "ZettelRecur")
         end
 
         -- Tags
@@ -507,7 +507,7 @@ local function render_agenda()
         -- Snooze annotation
         if it.snoozed then
             local st = (it.status ~= "" and it.status) or "todo"
-            seg(string.format("💤 %s until %s", st, it.due_date), "ZettelSnooze")
+            seg(string.format("💤 %s until %s", st, it.start_date), "ZettelSnooze")
         end
 
         -- Assemble line + highlight spans.
@@ -699,7 +699,7 @@ vim.api.nvim_create_autocmd("BufUnload", {
 -- ---------------------------------------------------------------------
 -- vim.ui.select / vim.ui.input are async (callback style). We chain them,
 -- and any cancellation (Esc / empty) aborts. run_wizard collects the choices
--- and hands them to on_complete{kind,name,priority,due_date,deadline}; on
+-- and hands them to on_complete{kind,name,priority,start_date,deadline}; on
 -- abort it calls on_abort (used by the batch flow to skip to the next line).
 -- ---------------------------------------------------------------------
 local function run_wizard(default_name, on_complete, on_abort)
@@ -742,11 +742,11 @@ local function run_wizard(default_name, on_complete, on_abort)
             local due_choices = {
                 "Today", "Tomorrow", "In 3 days", "In a week", "Pick a date…",
             }
-            vim.ui.select(due_choices, { prompt = "Start (due_date):" },
+            vim.ui.select(due_choices, { prompt = "Start date:" },
             function(due_choice)
                 if not due_choice then return on_abort() end
 
-                local function with_due(due_date)
+                local function with_due(start_date)
                     -- Step 6: deadline (hard due-by) with a None option
                     local dl_choices = {
                         "None", "Today", "Tomorrow", "In 3 days",
@@ -761,7 +761,7 @@ local function run_wizard(default_name, on_complete, on_abort)
                                 marker_new = marker_new,
                                 name = name,
                                 priority = priority,
-                                due_date = due_date,
+                                start_date = start_date,
                                 deadline = deadline,
                                 tag = tag,
                             })
@@ -832,14 +832,14 @@ local function promote_fleeting()
             return
         end
         apply_promotion(bufnr, file, choice.marker_new, choice.priority,
-            choice.due_date, choice.deadline, choice.name, choice.tag)
+            choice.start_date, choice.deadline, choice.name, choice.tag)
     end)
 end
 
--- Transform the buffer in place: keep title/created_date/due_date/snooze_count,
+-- Transform the buffer in place: keep title/created_date/start_date/snooze_count,
 -- add status/priority/deadline, swap the marker, seed a Steps section for
 -- projects. Writes the file.
-function apply_promotion(bufnr, file, marker_new, priority, due_date, deadline, name, tag)
+function apply_promotion(bufnr, file, marker_new, priority, start_date, deadline, name, tag)
     local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
 
     -- Locate frontmatter fences.
@@ -872,7 +872,7 @@ function apply_promotion(bufnr, file, marker_new, priority, due_date, deadline, 
     set_key("title", name)
     set_key("status", "todo")
     set_key("priority", priority)
-    set_key("due_date", due_date)
+    set_key("start_date", start_date)
     set_key("deadline", deadline)
     set_key("tags", (tag and tag ~= "") and (":" .. tag .. ":") or "")
     -- ensure snooze_count exists
@@ -911,7 +911,7 @@ function apply_promotion(bufnr, file, marker_new, priority, due_date, deadline, 
 
     local label = (marker_new == ":project:") and "project" or "ticket"
     vim.notify(string.format("Promoted to %s (priority %s, start %s%s)",
-        label, priority, due_date,
+        label, priority, start_date,
         deadline ~= "" and (", deadline " .. deadline) or ""),
         vim.log.levels.INFO)
 end
@@ -990,7 +990,7 @@ local function create_note_file(choice)
         "created_date: " .. date,
         "status: todo",
         "priority: " .. choice.priority,
-        "due_date: " .. choice.due_date,
+        "start_date: " .. choice.start_date,
         "deadline: " .. choice.deadline,
         "tags: " .. ((choice.tag and choice.tag ~= "")
             and (":" .. choice.tag .. ":") or ""),
@@ -1100,14 +1100,14 @@ vim.api.nvim_create_autocmd("BufReadPost", {
 
         elseif marker == "project" or marker == "ticket" then
             -- Reuse the same snooze semantics as fleeting notes: rewrite
-            -- due_date forward and bump snooze_count. (Mirrors your snooze().)
+            -- start_date forward and bump snooze_count. (Mirrors your snooze().)
             local function snooze(days)
                 local b = vim.api.nvim_get_current_buf()
                 local lines = vim.api.nvim_buf_get_lines(b, 0, -1, false)
                 local new_date = offset_date(days)
                 for i, line in ipairs(lines) do
-                    if line:match("^due_date:") then
-                        lines[i] = "due_date: " .. new_date
+                    if line:match("^start_date:") then
+                        lines[i] = "start_date: " .. new_date
                     end
                     if line:match("^snooze_count:") then
                         local count = tonumber(line:match("^snooze_count:%s*(%d+)")) or 0

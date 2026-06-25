@@ -11,22 +11,22 @@ local function open_next_due()
             table.insert(lines, line)
         end
         local is_fleeting = false
-        local due_date = nil
+        local start_date = nil
         local in_frontmatter = false
         for _, line in ipairs(lines) do
             if line:match("^---") then
                 in_frontmatter = not in_frontmatter
             end
-            if in_frontmatter and line:match("^due_date:%s*$") then
-                due_date = today
-            elseif in_frontmatter and line:match("^due_date:%s*(.+)") then
-                due_date = line:match("^due_date:%s*(.+)")
+            if in_frontmatter and line:match("^start_date:%s*$") then
+                start_date = today
+            elseif in_frontmatter and line:match("^start_date:%s*(.+)") then
+                start_date = line:match("^start_date:%s*(.+)")
             end
             if line:match(":fleeting:") then
                 is_fleeting = true
             end
         end
-        if is_fleeting and due_date and due_date <= today then
+        if is_fleeting and start_date and start_date <= today then
             table.insert(candidates, file)
         end
     end
@@ -58,8 +58,8 @@ local function snooze(days)
     local today = os.time()
     local new_date = os.date("%Y-%m-%d", today + (days * 86400))
     for i, line in ipairs(lines) do
-        if line:match("^due_date:") then
-            lines[i] = "due_date: " .. new_date
+        if line:match("^start_date:") then
+            lines[i] = "start_date: " .. new_date
         end
         if line:match("^snooze_count:") then
             local count = tonumber(line:match("^snooze_count:%s*(%d+)")) or 0
@@ -106,7 +106,7 @@ vim.keymap.set("v", "<leader>zcf", function()
         "---",
         "title: " .. title,
         "created_date: " .. date,
-        "due_date: ",
+        "start_date: ",
         "snooze_count: 0",
         "---",
         "",

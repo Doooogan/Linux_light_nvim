@@ -196,14 +196,14 @@ local function spawn_ticket(fm, occ_date)
         if t then deadline = fmt_date(t + n * 86400) end
     end
 
-    -- due_date is the occurrence date: the ticket becomes visible that day.
+    -- start_date is the occurrence date: the ticket becomes visible that day.
     local content = table.concat({
         "---",
         "title: " .. title,
         "created_date: " .. date,
         "status: todo",
         "priority: " .. (fm.priority or ""),
-        "due_date: " .. occ_date,
+        "start_date: " .. occ_date,
         "deadline: " .. deadline,
         "tags: " .. (fm.tags or ""),
         "recur_id: " .. (fm.recur_id or ""),
@@ -409,7 +409,7 @@ end
 -- Keymap + command to create a master.
 -- ---------------------------------------------------------------------
 vim.api.nvim_create_user_command("RecurNew", R.new_master, {})
-vim.keymap.set("n", "<leader>zcr", R.new_master,
+vim.keymap.set("n", "<leader>zr", R.new_master,
     { desc = "New recurring ticket (master note)" })
 
 return R
