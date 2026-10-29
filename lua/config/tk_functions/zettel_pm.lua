@@ -94,7 +94,7 @@ local PRIORITIES = { "A", "B", "C" }
 -- Your tag vocabulary. Edit this list to add/remove tags. They show up in the
 -- promotion/batch wizard as a single-choice step, and the agenda cycles
 -- through them with `f` to filter. Keep them short and lowercase.
-local TAGS = { "farm", "errands", "home" }
+local TAGS = { "farm", "errands", "home","practice"}
 
 -- ---------------------------------------------------------------------
 -- Small date helpers (all dates are plain YYYY-MM-DD strings)

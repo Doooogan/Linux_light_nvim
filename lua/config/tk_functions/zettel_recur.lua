@@ -409,7 +409,7 @@ end
 -- Keymap + command to create a master.
 -- ---------------------------------------------------------------------
 vim.api.nvim_create_user_command("RecurNew", R.new_master, {})
-vim.keymap.set("n", "<leader>zr", R.new_master,
+vim.keymap.set("n", "<leader>zcr", R.new_master,
     { desc = "New recurring ticket (master note)" })
 
 return R
