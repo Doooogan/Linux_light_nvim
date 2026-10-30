@@ -76,14 +76,59 @@
 --     dn           mark done + save  (archives to done/ on buffer close)
 --     dm           mark missed + save (archives to done/ on buffer close)
 --     (set "status: done" + leave the buffer → auto-archived to done/)
+--
+-- ---------------------------------------------------------------------
+-- v2: MENU, NOT SCHEDULE  (see frontmatter_v2.md)
+-- ---------------------------------------------------------------------
+--   stage:    needs_breakdown | ready | active   (missing = needs_breakdown)
+--   project:  [[project-note]] on tickets promoted from a project step
+--   tags:     one PLACE only (TAGS below); a project step may override it
+--             inline:  "- [ ] Buy 4 drip emitters :out:"
+--
+--   ACTIVE    capped at ACTIVE_CAP. Projects take one slot and show their
+--             current step (first unchecked leaf). Free slots auto-refill
+--             from `ready` (projects first, then priority traded against
+--             age). Ready items overdue or due within URGENT_DAYS come in
+--             even past the cap, and sort to the top.
+--   RECURRING spawned chores; shown separately, not counted in the cap.
+--   TO PLAN   needs_breakdown: can't enter ACTIVE until broken down.
+--   BACKLOG   ready, waiting for a slot (hidden; 'B' toggles).
+--
+--   A step promoted to a ticket becomes "- [ ] [[ticket]]". The agenda
+--   follows the link: shows the ticket's title/place, skips it while the
+--   ticket is snoozed, and treats it as checked once the ticket is
+--   done/missed.
+--
+--   IN THE AGENDA BUFFER (v2 additions)
+--     p            plan: "single physical action?" yes → ready,
+--                  no → turn into a project and open it to write steps
+--     a            pull into ACTIVE (runs the plan prompt first if needed)
+--     x            send back to BACKLOG (frees the slot; refill skips it
+--                  until tomorrow)
+--     dn / dm      done / missed for the item under the cursor
+--                  (on a project: ticks its current step)
+--     S            someday: archive it and add its title to someday.md
+--                  (with a link back to the file, so notes aren't lost)
+--     B            toggle backlog
+--
+--   ON A PROJECT / TICKET
+--     ds           someday (same as S in the agenda; archives on close)
+--   ON A PROJECT
+--     <leader>zt   promote the step under the cursor to its own ticket
+--   ON A PROJECT / TICKET
+--     ss / sm / sl snoozing an ACTIVE item also sends it to the backlog
 -- =====================================================================
 
 local M = {}
 
 -- Reuse the same vault path as the fleeting-note config.
-local vault = vim.fn.expand("~/zettelkasten/")
+-- (vim.g.zettel_vault overrides the path, e.g. for testing on a copy.)
+local vault = vim.g.zettel_vault or vim.fn.expand("~/zettelkasten/")
 local done_dir = vault .. "done/"
 local shopping_file = vault .. "shopping.md"
+-- v2: "not now, but remember it" list. Demoted items are archived to done/
+-- with status `someday` and listed here with a link back to the file.
+local someday_file = vault .. "someday.md"
 
 -- Forward declaration: defined later, used by the wizard completion handlers.
 local append_shopping
@@ -94,7 +139,28 @@ local PRIORITIES = { "A", "B", "C" }
 -- Your tag vocabulary. Edit this list to add/remove tags. They show up in the
 -- promotion/batch wizard as a single-choice step, and the agenda cycles
 -- through them with `f` to filter. Keep them short and lowercase.
-local TAGS = { "farm", "errands", "home","practice"}
+-- v2: tags mean PLACE only. Untagged = doable anywhere (never filtered out).
+local TAGS = { "farm", "home", "out", "computer" }
+
+-- v2: active-list size, and whether free slots fill themselves from `ready`.
+local ACTIVE_CAP = 7
+local AUTO_REFILL = true
+
+local function is_place(t)
+    for _, p in ipairs(TAGS) do
+        if p == t then return true end
+    end
+    return false
+end
+
+-- Parse colon-wrapped tags (":tag1: :tag2:") into a list.
+local function parse_tags(s)
+    local out = {}
+    for t in (s or ""):gmatch(":([%w%-_]+):") do
+        table.insert(out, t)
+    end
+    return out
+end
 
 -- ---------------------------------------------------------------------
 -- Small date helpers (all dates are plain YYYY-MM-DD strings)
@@ -157,7 +223,7 @@ end
 -- archived to done/. "done" = completed, "missed" = slipped (kept for tracking).
 local function is_terminal(fm)
     local s = fm.status or ""
-    return s == "done" or s == "missed"
+    return s == "done" or s == "missed" or s == "someday"
 end
 
 -- Is an item snoozed right now? (not terminal AND start_date in the future)
@@ -177,57 +243,162 @@ local function is_active(fm)
     return not date_before(today_str(), due)  -- due <= today
 end
 
--- Find the next actionable step in a project body, supporting arbitrary
--- nesting. The "next step" is the first UNCHECKED LEAF — an unchecked box with
--- no unchecked box nested beneath it (if it had unchecked children, you'd do
--- those first). Returns a display string with the ancestor trail for context,
--- e.g. "Item one > Item one subtask", or nil if nothing is left.
---
--- Checked boxes ("[x]") are ignored for display but still parsed so depth/
--- structure is understood correctly.
-local function next_step(body)
-    -- Parse every checkbox into {depth, checked, text}.
-    local boxes = {}
-    for _, line in ipairs(body) do
-        local indent, mark = line:match("^(%s*)%-%s*%[([%sxX])%]")
-        if indent ~= nil then
-            local text = line:gsub("^%s*%-%s*%[[%sxX]%]%s*", "")
-            table.insert(boxes, {
-                depth = #indent,
-                checked = (mark ~= " "),
-                text = text,
-            })
+-- ---------------------------------------------------------------------
+-- Small on-disk editors (the agenda edits files that aren't open)
+-- ---------------------------------------------------------------------
+-- Set (or insert) a frontmatter key in a file on disk. If the file is loaded
+-- in a buffer, edit the buffer instead and write it, so nvim never sees the
+-- file change underneath it.
+local function set_fm_key(file, key, value)
+    local bufnr = vim.fn.bufnr(file)
+    local loaded = bufnr ~= -1 and vim.api.nvim_buf_is_loaded(bufnr)
+    local lines = loaded and vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+        or vim.fn.readfile(file)
+    local fm_start, fm_end
+    for i, line in ipairs(lines) do
+        if line:match("^%-%-%-%s*$") then
+            if not fm_start then fm_start = i
+            elseif not fm_end then fm_end = i; break end
         end
     end
-    if #boxes == 0 then return nil end
-
-    -- A box is a leaf if the next box (if any) is NOT deeper than it.
-    local function is_leaf(i)
-        local nxt = boxes[i + 1]
-        if not nxt then return true end
-        return nxt.depth <= boxes[i].depth
-    end
-
-    -- Walk in order; first unchecked leaf is the next step.
-    for i, box in ipairs(boxes) do
-        if not box.checked and is_leaf(i) then
-            -- Build the ancestor trail: the nearest shallower box at each
-            -- decreasing depth above this one (skipping checked ancestors is
-            -- unnecessary — an unchecked leaf's parents are unchecked too).
-            local trail = {}
-            local depth_floor = box.depth
-            for j = i - 1, 1, -1 do
-                if boxes[j].depth < depth_floor then
-                    table.insert(trail, 1, boxes[j].text)
-                    depth_floor = boxes[j].depth
-                    if depth_floor == 0 then break end
-                end
-            end
-            table.insert(trail, box.text)  -- the leaf itself, last
-            return table.concat(trail, " > ")
+    if not fm_start or not fm_end then return false end
+    local new_line = (key .. ": " .. value):gsub("%s+$", "")
+    local done = false
+    for i = fm_start + 1, fm_end - 1 do
+        if lines[i]:match("^" .. key .. ":") then
+            lines[i] = new_line
+            done = true
+            break
         end
+    end
+    if not done then table.insert(lines, fm_end, new_line) end
+    if loaded then
+        vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
+        vim.api.nvim_buf_call(bufnr, function() vim.cmd("silent write") end)
+    else
+        vim.fn.writefile(lines, file)
+    end
+    return true
+end
+
+-- Replace one line (1-indexed) of a file, buffer-aware like set_fm_key.
+local function set_file_line(file, lnum, text)
+    local bufnr = vim.fn.bufnr(file)
+    if bufnr ~= -1 and vim.api.nvim_buf_is_loaded(bufnr) then
+        vim.api.nvim_buf_set_lines(bufnr, lnum - 1, lnum, false, { text })
+        vim.api.nvim_buf_call(bufnr, function() vim.cmd("silent write") end)
+    else
+        local lines = vim.fn.readfile(file)
+        lines[lnum] = text
+        vim.fn.writefile(lines, file)
+    end
+end
+
+-- Resolve a [[link]] to a file in the vault root or done/.
+local function resolve_link(name)
+    name = name:gsub("%.md$", "")
+    for _, p in ipairs({ vault .. name .. ".md", done_dir .. name .. ".md" }) do
+        if vim.fn.filereadable(p) == 1 then return p end
     end
     return nil
+end
+
+-- Find the next actionable step in a project file, supporting arbitrary
+-- nesting. The next step is the first UNCHECKED LEAF: an unchecked box with
+-- no unchecked boxes nested beneath it.
+--
+-- v2 additions:
+--   * an inline place tag on a step (":out:") overrides the project's tag
+--   * a step that is a [[link]] to a ticket takes that ticket's title/place;
+--     it counts as checked once the ticket is done/missed, and is skipped
+--     (not a candidate) while the ticket is snoozed
+--
+-- Returns (step, waiting_until):
+--   step = { text = "Parent > Leaf", tag = "out"|nil, lnum = <file line>,
+--            link_file = <ticket path>|nil, deadline = ""|date }
+--   waiting_until = earliest snooze date when every remaining step is a
+--   snoozed ticket (step is nil then); nil otherwise.
+local function next_step(file)
+    local lines = vim.fn.readfile(file)
+    local start, fence = 1, 0
+    for i, l in ipairs(lines) do
+        if l:match("^%-%-%-%s*$") then
+            fence = fence + 1
+            if fence == 2 then start = i + 1; break end
+        end
+    end
+
+    local boxes = {}
+    for i = start, #lines do
+        local line = lines[i]
+        local indent, mark = line:match("^(%s*)[%-%*]%s*%[([%sxX])%]")
+        if indent ~= nil then
+            local text = line:gsub("^%s*[%-%*]%s*%[[%sxX]%]%s*", "")
+            local box = { depth = #indent, checked = (mark ~= " "),
+                          text = text, lnum = i, deadline = "" }
+            for t in text:gmatch(":([%w%-_]+):") do
+                if is_place(t) then box.tag = t end
+            end
+            if box.tag then
+                box.text = vim.trim((box.text:gsub("%s*:" .. vim.pesc(box.tag) .. ":", "")))
+            end
+            local link = box.text:match("%[%[([^%]|]+)")
+            if link and not box.checked then
+                local lf = resolve_link(link)
+                if lf then
+                    local lfm = read_note(lf)
+                    box.link_file = lf
+                    if is_terminal(lfm) then
+                        box.checked = true
+                    else
+                        if lfm.title and lfm.title ~= "" then box.text = lfm.title end
+                        local lt = parse_tags(lfm.tags)
+                        if not box.tag and lt[1] then box.tag = lt[1] end
+                        box.deadline = lfm.deadline or ""
+                        if is_snoozed(lfm) then box.snoozed_until = lfm.start_date end
+                    end
+                end
+            end
+            table.insert(boxes, box)
+        end
+    end
+    if #boxes == 0 then return nil, nil end
+
+    -- Leaf = no unchecked descendants (a parent whose children are all ticked
+    -- is itself the next step).
+    local function is_leaf(i)
+        for j = i + 1, #boxes do
+            if boxes[j].depth <= boxes[i].depth then break end
+            if not boxes[j].checked then return false end
+        end
+        return true
+    end
+
+    local waiting
+    for i, box in ipairs(boxes) do
+        if not box.checked and is_leaf(i) then
+            if box.snoozed_until then
+                if not waiting or box.snoozed_until < waiting then
+                    waiting = box.snoozed_until
+                end
+            else
+                local trail = {}
+                local depth_floor = box.depth
+                for j = i - 1, 1, -1 do
+                    if boxes[j].depth < depth_floor then
+                        table.insert(trail, 1, (boxes[j].text:gsub("%s*:[%w%-_]+:", "")))
+                        depth_floor = boxes[j].depth
+                        if depth_floor == 0 then break end
+                    end
+                end
+                table.insert(trail, box.text)
+                return { text = table.concat(trail, " > "), tag = box.tag,
+                         lnum = box.lnum, link_file = box.link_file,
+                         deadline = box.deadline }, nil
+            end
+        end
+    end
+    return nil, waiting
 end
 
 -- Priority sort key: A < B < C < (blank). Blank/unknown sorts last.
@@ -249,29 +420,15 @@ end
 -- ---------------------------------------------------------------------
 -- Agenda data collection
 -- ---------------------------------------------------------------------
-local function collect(show_snoozed, filter_tag)
-    local items = {}        -- {file, kind, title, step, priority, deadline, status, snoozed, tags}
+-- v2: collects EVERYTHING (no tag filter) so the active cap counts the whole
+-- list; the tag filter is applied at render time.
+-- item = {file, kind, title, step, waiting, priority, deadline, status,
+--         snoozed, start_date, tags, recur_id, stage, created}
+local function collect(show_snoozed)
+    local items = {}
     local fleeting_unprocessed = 0
     local fleeting_snoozing = 0
     local today = today_str()
-
-    -- Parse colon-wrapped tags (":tag1: :tag2:") into a trimmed list.
-    local function parse_tags(s)
-        local out = {}
-        for t in (s or ""):gmatch(":([%w%-_]+):") do
-            table.insert(out, t)
-        end
-        return out
-    end
-
-    -- Does this item's tag list contain filter_tag? (nil filter = match all)
-    local function tag_matches(tags)
-        if not filter_tag then return true end
-        for _, t in ipairs(tags) do
-            if t == filter_tag then return true end
-        end
-        return false
-    end
 
     for _, file in ipairs(vim.fn.glob(vault .. "*.md", false, true)) do
         local fm, marker = read_note(file)
@@ -288,40 +445,38 @@ local function collect(show_snoozed, filter_tag)
                 fleeting_snoozing = fleeting_snoozing + 1
             end
 
-        elseif marker == "project" or marker == "ticket" then
+        elseif (marker == "project" or marker == "ticket")
+            -- A ticket promoted from a project step shows up through its
+            -- project's step line, not as a separate item.
+            and not (marker == "ticket" and (fm.project or "") ~= "") then
             local snoozed = is_snoozed(fm)
-            local tags = parse_tags(fm.tags)
-            -- Include if active (or snoozed when shown) AND passes tag filter.
-            local include = (is_active(fm) or (show_snoozed and snoozed))
-                and tag_matches(tags)
-            if include then
+            if is_active(fm) or (show_snoozed and snoozed) then
                 local title = (fm.title and fm.title ~= "" and fm.title)
                     or vim.fn.fnamemodify(file, ":t")
-                if marker == "project" then
-                    -- need the body again for steps
-                    local _, _, body = read_note(file)
-                    local step = next_step(body)
-                    -- A project with no unchecked steps is effectively done;
-                    -- hide it from the agenda.
-                    if step ~= nil then
-                        table.insert(items, {
-                            file = file, kind = "project", title = title,
-                            step = step, priority = fm.priority or "",
-                            deadline = fm.deadline or "",
-                            status = fm.status or "", snoozed = snoozed,
-                            start_date = fm.start_date or "", tags = tags,
-                        })
-                    end
-                else
-                    table.insert(items, {
-                        file = file, kind = "ticket", title = title,
-                        step = nil, priority = fm.priority or "",
-                        deadline = fm.deadline or "",
-                        status = fm.status or "", snoozed = snoozed,
-                        start_date = fm.start_date or "", tags = tags,
-                        recur_id = fm.recur_id or "",
-                    })
+                local stage = fm.stage
+                if stage ~= "ready" and stage ~= "active" then
+                    stage = "needs_breakdown"
                 end
+                local item = {
+                    file = file, kind = marker, title = title,
+                    priority = fm.priority or "",
+                    deadline = fm.deadline or "",
+                    status = fm.status or "", snoozed = snoozed,
+                    start_date = fm.start_date or "",
+                    tags = parse_tags(fm.tags),
+                    recur_id = fm.recur_id or "",
+                    stage = stage,
+                    created = fm.created_date or "",
+                    parked = fm.parked or "",
+                }
+                if marker == "project" then
+                    item.step, item.waiting = next_step(file)
+                    -- The current step's place overrides the project's.
+                    if item.step and item.step.tag then
+                        item.tags = { item.step.tag }
+                    end
+                end
+                table.insert(items, item)
             end
         end
     end
@@ -339,6 +494,114 @@ local function collect(show_snoozed, filter_tag)
     end)
 
     return items, fleeting_unprocessed, fleeting_snoozing
+end
+
+-- Items that count toward the cap: active, visible now, not recurring.
+local function counts_toward_cap(it)
+    return it.stage == "active" and not it.snoozed and it.recur_id == ""
+end
+
+-- Refill ordering: each priority level is worth PRIORITY_STEP_DAYS of age,
+-- so old low-priority items eventually surface. E.g. with 14: a C ticket
+-- created 4 weeks ago ties with a brand-new A. Lower score = pulled first.
+local PRIORITY_STEP_DAYS = 14
+
+local function age_days(created)
+    local y, m, d = (created or ""):match("^(%d%d%d%d)%-(%d%d)%-(%d%d)$")
+    if not y then return 0 end
+    local t = os.time({ year = tonumber(y), month = tonumber(m), day = tonumber(d), hour = 12 })
+    return math.max(0, math.floor((os.time() - t) / 86400))
+end
+
+-- Deadline pressure: a ready item whose deadline is past, or within
+-- URGENT_DAYS, is pulled into ACTIVE even if that goes over the cap.
+-- (3 matches the orange "due soon" highlight.)
+local URGENT_DAYS = 3
+
+-- Days until a YYYY-MM-DD date (negative = past); nil if no/invalid date.
+local function days_to(date_str)
+    local y, m, d = (date_str or ""):match("^(%d%d%d%d)%-(%d%d)%-(%d%d)$")
+    if not y then return nil end
+    local t = os.time({ year = tonumber(y), month = tonumber(m), day = tonumber(d), hour = 12 })
+    local now = os.time({ year = tonumber(os.date("%Y")), month = tonumber(os.date("%m")),
+        day = tonumber(os.date("%d")), hour = 12 })
+    return math.floor((t - now) / 86400 + 0.5)
+end
+
+-- An item's effective deadline: its own, or its current linked step's.
+local function item_deadline(it)
+    if it.deadline and it.deadline ~= "" then return it.deadline end
+    if it.step and it.step.deadline and it.step.deadline ~= "" then
+        return it.step.deadline
+    end
+    return ""
+end
+
+local function is_urgent(it)
+    local d = days_to(item_deadline(it))
+    return d ~= nil and d <= URGENT_DAYS
+end
+
+local function refill_score(it)
+    return prio_rank(it.priority) * PRIORITY_STEP_DAYS - age_days(it.created)
+end
+
+-- Fill free ACTIVE slots from `ready` items: projects that have a next step
+-- first, then tickets; within each, by refill_score (priority traded against
+-- age), then deadline. Writes `stage: active` to each pulled file. Items sent
+-- back with 'x' carry `parked: <today>` and are skipped until tomorrow.
+-- Returns the number pulled.
+local function refill(items)
+    if not AUTO_REFILL then return 0 end
+    local n = 0
+    for _, it in ipairs(items) do
+        if counts_toward_cap(it) then n = n + 1 end
+    end
+    local today = today_str()
+    local pulled = 0
+
+    -- 1) Deadline pressure: urgent ready items come in regardless of the cap
+    --    ('x' still parks one for the day if you really want it gone).
+    for _, it in ipairs(items) do
+        if it.stage == "ready" and not it.snoozed and it.recur_id == ""
+            and it.parked ~= today and is_urgent(it) then
+            if set_fm_key(it.file, "stage", "active") then
+                it.stage = "active"
+                n = n + 1
+                pulled = pulled + 1
+            end
+        end
+    end
+    if n >= ACTIVE_CAP then return pulled end
+
+    -- 2) Normal refill up to the cap.
+    local cands = {}
+    for _, it in ipairs(items) do
+        if it.stage == "ready" and not it.snoozed and it.recur_id == ""
+            and it.parked ~= today  -- sent back with 'x' today
+            and (it.kind ~= "project" or it.step ~= nil) then
+            table.insert(cands, it)
+        end
+    end
+    table.sort(cands, function(a, b)
+        local pa, pb = a.kind == "project", b.kind == "project"
+        if pa ~= pb then return pa end
+        local sa, sb = refill_score(a), refill_score(b)
+        if sa ~= sb then return sa < sb end
+        local ka, kb = deadline_key(a.deadline), deadline_key(b.deadline)
+        if ka ~= kb then return ka < kb end
+        return a.title < b.title
+    end)
+
+    for _, it in ipairs(cands) do
+        if n >= ACTIVE_CAP then break end
+        if set_fm_key(it.file, "stage", "active") then
+            it.stage = "active"
+            n = n + 1
+            pulled = pulled + 1
+        end
+    end
+    return pulled
 end
 
 -- ---------------------------------------------------------------------
@@ -419,17 +682,155 @@ end
 
 local TITLE_WIDTH = 50  -- title column width (truncated past this)
 
-local function render_agenda()
+-- Open a file for editing. If nvim stops at a swap-file prompt (another nvim
+-- has it open, or an old crash left a .swp) and you quit/abort, show a short
+-- message instead of a Lua stack trace.
+local function safe_edit(path)
+    local ok, err = pcall(vim.cmd, "edit " .. vim.fn.fnameescape(path))
+    if not ok then
+        local msg = tostring(err)
+        if msg:match("E325") then
+            vim.notify("Swap file found for " .. vim.fn.fnamemodify(path, ":t")
+                .. " — another nvim has it open, or an old session crashed. "
+                .. "Close the other one, or delete the swap file (:h E325).",
+                vim.log.levels.WARN)
+        else
+            vim.notify(msg, vim.log.levels.ERROR)
+        end
+        return false
+    end
+    return true
+end
+
+-- Move a terminal-status file into done/ (never clobbers). Used by the
+-- BufUnload auto-archive and by agenda actions on files that aren't open.
+local function archive_file(file)
+    if file:match("/done/") or vim.fn.filereadable(file) == 0 then return false end
+    if vim.fn.isdirectory(done_dir) == 0 then vim.fn.mkdir(done_dir, "p") end
+    local name = vim.fn.fnamemodify(file, ":t")
+    local target = done_dir .. name
+    if vim.fn.filereadable(target) == 1 then
+        target = done_dir .. os.date("%Y%m%d%H%M%S_") .. name
+    end
+    local ok = os.rename(file, target)
+    if ok then
+        vim.schedule(function()
+            vim.notify("Archived → done/" .. vim.fn.fnamemodify(target, ":t"),
+                vim.log.levels.INFO)
+        end)
+    end
+    return ok
+end
+
+local show_backlog = false  -- agenda toggle: list the backlog?
+local row_items = {}        -- agenda row -> item (for p / a / x / dn / dm)
+
+local render_agenda  -- forward declaration (actions re-render)
+
+-- Set a terminal status on a ticket; archive right away unless it's open in a
+-- buffer (then the BufUnload autocmd archives it when you leave).
+local function finish_ticket(file, status)
+    set_fm_key(file, "status", status)
+    local bufnr = vim.fn.bufnr(file)
+    if bufnr == -1 or not vim.api.nvim_buf_is_loaded(bufnr) then
+        archive_file(file)
+    end
+end
+
+-- Demote to someday: status `someday`, a line in someday.md linking the
+-- archived file (body notes are kept there), then archive like done.
+local function send_to_someday(file, title)
+    if vim.fn.filereadable(someday_file) == 0 then
+        vim.fn.writefile({ "# Someday", "",
+            "Ideas parked on purpose. Re-capture one with <leader>zb on its line.",
+            "" }, someday_file)
+    end
+    local stem = vim.fn.fnamemodify(file, ":t:r")
+    local lines = vim.fn.readfile(someday_file)
+    table.insert(lines, string.format("- %s  [[%s]]  (%s)", title, stem, today_str()))
+    vim.fn.writefile(lines, someday_file)
+    finish_ticket(file, "someday")
+    vim.notify("→ someday: " .. title, vim.log.levels.INFO)
+end
+
+-- dn / dm on an agenda item. Tickets get the status; a project ticks its
+-- current step (or finishes the step's linked ticket).
+local function complete_item(it, status)
+    if it.kind == "ticket" then
+        finish_ticket(it.file, status)
+        vim.notify(string.format("%s: %s", status, it.title), vim.log.levels.INFO)
+    elseif it.step then
+        if it.step.link_file then
+            finish_ticket(it.step.link_file, status)
+        else
+            local line = vim.fn.readfile(it.file)[it.step.lnum]
+            set_file_line(it.file, it.step.lnum,
+                (line:gsub("%[%s%]", "[x]", 1)))
+        end
+        vim.notify("Step done: " .. it.step.text, vim.log.levels.INFO)
+    else
+        vim.notify("Project has no next step — open it to add one, or set its status.",
+            vim.log.levels.WARN)
+    end
+end
+
+-- The breakdown prompt. Yes → ready. No → ticket becomes a project with a
+-- Steps section and opens for writing the steps.
+local function plan_item(it, then_activate)
+    local q = (it.kind == "project")
+        and "Are the steps written, with a concrete first one?"
+        or "Is this a single physical action?"
+    vim.ui.select({ "Yes", "No" }, { prompt = q }, function(choice)
+        if not choice then return end
+        if choice == "Yes" then
+            set_fm_key(it.file, "stage", then_activate and "active" or "ready")
+            render_agenda()
+            return
+        end
+        if it.kind == "ticket" then
+            local lines = vim.fn.readfile(it.file)
+            local has_steps = false
+            for i, line in ipairs(lines) do
+                if line:match(":ticket:") then
+                    lines[i] = line:gsub(":ticket:", ":project:")
+                end
+                if line:match("^%s*[%-%*]%s*%[[%sxX]%]") then has_steps = true end
+            end
+            if not has_steps then
+                vim.list_extend(lines, { "", "## Steps", "", "- [ ] " })
+            end
+            vim.fn.writefile(lines, it.file)
+        end
+        set_fm_key(it.file, "stage", "ready")
+        if safe_edit(it.file) then vim.cmd("normal! G$") end
+        vim.notify("Write the steps; the first unchecked one becomes the next action.",
+            vim.log.levels.INFO)
+    end)
+end
+
+render_agenda = function()
     -- Lazy recurring-ticket generation: spawn any due instances before scanning.
     -- Safe no-op if the recurrence module isn't installed.
     pcall(function() require("config.tk_functions.zettel_recur").generate() end)
 
     setup_highlights()
-    local items, unprocessed, snoozing = collect(show_snoozed, filter_tag)
+    local items, unprocessed, snoozing = collect(show_snoozed)
+    refill(items)
+
     local lines = {}
     local line_targets = {}  -- maps buffer line number -> file path
     local header_rows = {}   -- ordered list of item-header line numbers
     local highlights = {}    -- {line0, hl_group, col_start, col_end} (0-indexed)
+    row_items = {}
+
+    -- Tag filter (untagged items always match: doable anywhere).
+    local function tag_matches(it)
+        if not filter_tag or #it.tags == 0 then return true end
+        for _, t in ipairs(it.tags) do
+            if t == filter_tag then return true end
+        end
+        return false
+    end
 
     local mode = show_snoozed and "showing snoozed" or "hiding snoozed"
     table.insert(lines, string.format(
@@ -447,23 +848,45 @@ local function render_agenda()
     end
     local filter_label = filter_tag and ("filtering: " .. filter_tag) or "all"
     table.insert(lines, string.format(
-        "Tags: %s   (%s — 'f' to cycle)",
+        "Places: %s   (%s — 'f' to cycle)",
         table.concat(tag_parts, " · "), filter_label))
     table.insert(lines, string.rep("─", 60))
-    table.insert(lines, "")
 
-    -- Bucket into sections. Active projects, active tickets, and (if shown)
-    -- snoozed items of either kind. `items` is already priority-sorted, so
-    -- each bucket preserves priority order.
-    local projects, tickets, snoozed_items = {}, {}, {}
+    -- Bucket into sections. `items` is already priority-sorted, so each
+    -- bucket preserves priority order. The cap counts all places; the tag
+    -- filter only hides rows.
+    local active, recurring, to_plan, backlog, snoozed_items = {}, {}, {}, {}, {}
+    local n_active, n_backlog = 0, 0
     for _, it in ipairs(items) do
-        if it.snoozed then
-            table.insert(snoozed_items, it)
-        elseif it.kind == "project" then
-            table.insert(projects, it)
-        else
-            table.insert(tickets, it)
+        if counts_toward_cap(it) then n_active = n_active + 1 end
+        if it.stage == "ready" and not it.snoozed and it.recur_id == "" then
+            n_backlog = n_backlog + 1
         end
+        if tag_matches(it) then
+            if it.snoozed then
+                table.insert(snoozed_items, it)
+            elseif it.recur_id ~= "" then
+                table.insert(recurring, it)
+            elseif it.stage == "active"
+                -- unplanned but due soon/overdue: show it where you'll see it
+                or (it.stage == "needs_breakdown" and is_urgent(it)) then
+                table.insert(active, it)
+            elseif it.stage == "needs_breakdown" then
+                table.insert(to_plan, it)
+            else
+                table.insert(backlog, it)
+            end
+        end
+    end
+
+    -- Urgent (overdue / due soon) items first in ACTIVE; stable otherwise.
+    do
+        local urgent, rest = {}, {}
+        for _, it in ipairs(active) do
+            table.insert(is_urgent(it) and urgent or rest, it)
+        end
+        table.sort(urgent, function(a, b) return item_deadline(a) < item_deadline(b) end)
+        active = vim.list_extend(urgent, rest)
     end
 
     -- Render one item: appends its line(s), records jump targets / headers,
@@ -480,18 +903,19 @@ local function render_agenda()
         seg(tagmark .. " ", "ZettelType")
         local disp_title = truncate(it.title, TITLE_WIDTH)
         seg(disp_title, nil)
-        -- Pad to TITLE_WIDTH + a 2-space gutter. truncate() guarantees the
-        -- title is <= TITLE_WIDTH, so this is always >= 2 (no max() needed,
-        -- which previously over-padded exactly-full titles by one column).
         seg(string.rep(" ", (TITLE_WIDTH - disp_width(disp_title)) + 2), nil)
 
         seg("(" .. prio .. ")", "ZettelPrio")
 
-        -- Deadline column (fixed slot so following columns align even when blank)
+        -- Deadline column: the project's, or its current linked step's.
+        local dl = it.deadline
+        if (dl == nil or dl == "") and it.step and it.step.deadline ~= "" then
+            dl = it.step.deadline
+        end
         local dl_text, dl_hl = "", nil
-        if it.deadline and it.deadline ~= "" then
-            dl_text = "⏰ " .. it.deadline
-            dl_hl = deadline_hl(it.deadline)
+        if dl and dl ~= "" then
+            dl_text = "⏰ " .. dl
+            dl_hl = deadline_hl(dl)
         end
         seg("  ", nil)
         seg(pad_to(dl_text, 16), dl_hl)  -- "⏰ 2026-06-10" ~13 cols, pad to 16
@@ -527,11 +951,28 @@ local function render_agenda()
 
         table.insert(lines, line)
         line_targets[#lines] = it.file
+        row_items[#lines] = it
         table.insert(header_rows, #lines)
-        if it.kind == "project" and it.step then
-            table.insert(lines, "      → " .. it.step)
+        if it.stage == "needs_breakdown" then
+            table.insert(lines, "      → (due soon, not planned yet — 'p' to plan)")
+            table.insert(highlights, { #lines - 1, "ZettelDueSoon", 0, -1 })
             line_targets[#lines] = it.file
-            table.insert(lines, "")  -- spacer so multi-line entries don't merge
+            row_items[#lines] = it
+        elseif it.kind == "project" then
+            if it.step then
+                table.insert(lines, "      → " .. it.step.text)
+                -- <CR> on the step line opens the step's ticket if it has one
+                line_targets[#lines] = it.step.link_file or it.file
+            elseif it.waiting then
+                table.insert(lines, "      → (next step snoozed until " .. it.waiting .. ")")
+                table.insert(highlights, { #lines - 1, "ZettelSnooze", 0, -1 })
+                line_targets[#lines] = it.file
+            else
+                table.insert(lines, "      → (no next action — add a step)")
+                table.insert(highlights, { #lines - 1, "ZettelDueSoon", 0, -1 })
+                line_targets[#lines] = it.file
+            end
+            row_items[#lines] = it
         end
     end
 
@@ -540,7 +981,6 @@ local function render_agenda()
         table.insert(lines, "")
         table.insert(lines, "━━ " .. title .. " ━━")
         table.insert(highlights, { #lines - 1, "ZettelSection", 0, #("━━ " .. title .. " ━━") })
-        table.insert(lines, "")
         if #bucket == 0 then
             if empty_msg then table.insert(lines, "  " .. empty_msg) end
         else
@@ -550,11 +990,27 @@ local function render_agenda()
         end
     end
 
-    emit_section("PROJECTS", projects, "(none)")
-    emit_section("TICKETS",  tickets,  "(none)")
+    local over = (n_active > ACTIVE_CAP) and "  — over cap, 'x' to send some back" or ""
+    emit_section(string.format("ACTIVE %d/%d%s", n_active, ACTIVE_CAP, over), active,
+        filter_tag and "(nothing active for this place)"
+        or (n_backlog == 0 and "(empty — plan something from TO PLAN with 'p')" or "(none)"))
+    if #recurring > 0 then
+        emit_section("RECURRING", recurring, nil)
+    end
+    emit_section("TO PLAN", to_plan, "(none)")
+    if show_backlog then
+        emit_section("BACKLOG", backlog, "(none)")
+    else
+        table.insert(lines, "")
+        table.insert(lines, string.format("━━ BACKLOG: %d ready — 'B' to show ━━", n_backlog))
+        table.insert(highlights, { #lines - 1, "ZettelType", 0, -1 })
+    end
     if show_snoozed then
         emit_section("SNOOZED", snoozed_items, "(none)")
     end
+    table.insert(lines, "")
+    table.insert(lines, "p plan · a activate · x backlog · S someday · dn/dm done/missed · B backlog · z snoozed · f place · r refresh · q quit")
+    table.insert(highlights, { #lines - 1, "ZettelType", 0, -1 })
 
     -- Create or reuse the scratch buffer.
     if not agenda_buf or not vim.api.nvim_buf_is_valid(agenda_buf) then
@@ -583,7 +1039,7 @@ local function render_agenda()
     vim.b[agenda_buf].header_rows = header_rows
 
     -- Place the cursor on the first item header (if any) on open/refresh.
-    if header_rows[1] then
+    if header_rows[1] and vim.api.nvim_get_current_buf() == agenda_buf then
         pcall(vim.api.nvim_win_set_cursor, 0, { header_rows[1], 0 })
     end
 
@@ -594,7 +1050,7 @@ local function render_agenda()
         local targets = vim.b[agenda_buf].line_targets or {}
         local target = targets[row]
         if target then
-            vim.cmd("edit " .. vim.fn.fnameescape(target))
+            safe_edit(target)
         end
     end, opts)
 
@@ -619,6 +1075,52 @@ local function render_agenda()
     end
     vim.keymap.set("n", "<Tab>",   function() jump(1)  end, opts)
     vim.keymap.set("n", "<S-Tab>", function() jump(-1) end, opts)
+
+    -- v2 item actions (act on the item under the cursor).
+    local function with_item(fn)
+        return function()
+            local it = row_items[vim.api.nvim_win_get_cursor(0)[1]]
+            if not it then return end
+            fn(it)
+        end
+    end
+    vim.keymap.set("n", "p", with_item(function(it) plan_item(it, false) end), opts)
+    vim.keymap.set("n", "a", with_item(function(it)
+        if it.recur_id ~= "" then
+            vim.notify("Recurring items sit outside the cap.", vim.log.levels.INFO)
+        elseif it.stage == "needs_breakdown" then
+            plan_item(it, true)
+        else
+            set_fm_key(it.file, "stage", "active")
+            render_agenda()
+        end
+    end), opts)
+    vim.keymap.set("n", "x", with_item(function(it)
+        set_fm_key(it.file, "stage", "ready")
+        -- Keep auto-refill from pulling it straight back in today.
+        set_fm_key(it.file, "parked", today_str())
+        render_agenda()
+    end), opts)
+    vim.keymap.set("n", "dn", with_item(function(it)
+        complete_item(it, "done"); render_agenda()
+    end), opts)
+    vim.keymap.set("n", "dm", with_item(function(it)
+        complete_item(it, "missed"); render_agenda()
+    end), opts)
+    vim.keymap.set("n", "S", with_item(function(it)
+        local what = (it.kind == "project") and "project" or "ticket"
+        vim.ui.select({ "Yes", "No" },
+            { prompt = "Move " .. what .. " '" .. it.title .. "' to someday?" },
+            function(choice)
+                if choice ~= "Yes" then return end
+                send_to_someday(it.file, it.title)
+                render_agenda()
+            end)
+    end), opts)
+    vim.keymap.set("n", "B", function()
+        show_backlog = not show_backlog
+        render_agenda()
+    end, opts)
 
     vim.keymap.set("n", "r", function() render_agenda() end, opts)
     vim.keymap.set("n", "z", function()
@@ -679,22 +1181,8 @@ vim.api.nvim_create_autocmd("BufUnload", {
         -- Re-read from disk (the buffer is going away; disk is source of truth).
         -- Archive on either terminal status (done or missed).
         local st = file_status(file)
-        if st ~= "done" and st ~= "missed" then return end
-
-        ensure_done_dir()
-        local name = vim.fn.fnamemodify(file, ":t")
-        local target = done_dir .. name
-        -- Avoid clobbering an existing archived file of the same name.
-        if vim.fn.filereadable(target) == 1 then
-            target = done_dir .. os.date("%Y%m%d%H%M%S_") .. name
-        end
-        local ok = os.rename(file, target)
-        if ok then
-            vim.schedule(function()
-                vim.notify("Archived → done/" .. vim.fn.fnamemodify(target, ":t"),
-                    vim.log.levels.INFO)
-            end)
-        end
+        if st ~= "done" and st ~= "missed" and st ~= "someday" then return end
+        archive_file(file)
     end,
 })
 
@@ -879,6 +1367,10 @@ function apply_promotion(bufnr, file, marker_new, priority, start_date, deadline
     set_key("start_date", start_date)
     set_key("deadline", deadline)
     set_key("tags", (tag and tag ~= "") and (":" .. tag .. ":") or "")
+    -- v2: every new ticket/project starts unplanned (breakdown happens later,
+    -- from the agenda's TO PLAN section, never at capture).
+    set_key("stage", "needs_breakdown")
+    set_key("project", "")
     -- ensure snooze_count exists
     set_key("snooze_count",
         (function()
@@ -999,6 +1491,8 @@ local function create_note_file(choice)
         "tags: " .. ((choice.tag and choice.tag ~= "")
             and (":" .. choice.tag .. ":") or ""),
         "snooze_count: 0",
+        "stage: needs_breakdown",
+        "project:",
         "---",
     }, body), "\n")
 
@@ -1022,7 +1516,12 @@ local function batch_from_lines(lines)
     local pending = {}
     for _, l in ipairs(lines) do
         local t = l:gsub("^%s+", ""):gsub("%s+$", "")
-        if t ~= "" then table.insert(pending, t) end
+        -- v2: clean list syntax so someday.md / checklist lines work too:
+        -- "- [ ] Title  [[link]]  (2026-10-29)" -> "Title"
+        t = t:gsub("^[%-%*]%s+", ""):gsub("^%[[%sxX]%]%s*", "")
+        t = t:gsub("%s*%(%d%d%d%d%-%d%d%-%d%d%)%s*$", ""):gsub("%s*%[%[[^%]]*%]%]", "")
+        t = t:gsub("%s+$", "")
+        if t ~= "" and not t:match("^#") then table.insert(pending, t) end
     end
     if #pending == 0 then
         vim.notify("No non-blank lines selected.", vim.log.levels.WARN)
@@ -1085,6 +1584,68 @@ local function batch_from_selection()
 end
 
 -- ---------------------------------------------------------------------
+-- v2: promote the project step under the cursor to its own ticket file.
+-- The step line becomes "- [ ] [[<ticket>]]"; the ticket gets the step's
+-- place (or the project's), a project: backlink, and opens for editing so
+-- you can add the date/deadline/notes that made it worth a file.
+-- ---------------------------------------------------------------------
+function promote_step()
+    local bufnr = vim.api.nvim_get_current_buf()
+    local proj_file = vim.api.nvim_buf_get_name(bufnr)
+    local row = vim.api.nvim_win_get_cursor(0)[1]
+    local line = vim.api.nvim_buf_get_lines(bufnr, row - 1, row, false)[1] or ""
+    local prefix, text = line:match("^(%s*[%-%*]%s*%[%s%]%s*)(.*)$")
+    if not prefix or vim.trim(text) == "" then
+        vim.notify("Put the cursor on an unchecked step.", vim.log.levels.WARN)
+        return
+    end
+    if text:match("%[%[") then
+        vim.notify("This step is already a link.", vim.log.levels.WARN)
+        return
+    end
+
+    local pfm = read_note(proj_file)
+    local tag
+    for t in text:gmatch(":([%w%-_]+):") do
+        if is_place(t) then tag = t end
+    end
+    local title = vim.trim((text:gsub("%s*:[%w%-_]+:", "")))
+    if not tag then tag = parse_tags(pfm.tags)[1] end
+
+    local date = today_str()
+    local slug = slugify(title)
+    if slug == "" then slug = "step" end
+    local base = date .. "_" .. slug
+    if vim.fn.filereadable(vault .. base .. ".md") == 1 then
+        base = base .. "_" .. os.date("%H%M%S")
+    end
+    local proj_stem = vim.fn.fnamemodify(proj_file, ":t:r")
+    vim.fn.writefile({
+        "---",
+        "title: " .. title,
+        "created_date: " .. date,
+        "status: todo",
+        "priority: " .. (pfm.priority or ""),
+        "start_date: " .. date,
+        "deadline: ",
+        "tags: " .. (tag and (":" .. tag .. ":") or ""),
+        "snooze_count: 0",
+        "stage: ready",
+        "project: [[" .. proj_stem .. "]]",
+        "---",
+        "",
+        ":ticket:",
+        "",
+    }, vault .. base .. ".md")
+
+    vim.api.nvim_buf_set_lines(bufnr, row - 1, row, false,
+        { prefix .. "[[" .. base .. "]]" })
+    vim.cmd("write")
+    safe_edit(vault .. base .. ".md")
+    vim.notify("Step promoted → " .. base, vim.log.levels.INFO)
+end
+
+-- ---------------------------------------------------------------------
 -- Buffer-local keymaps for project/ticket files (snooze reuse + promote off)
 -- ---------------------------------------------------------------------
 -- Your existing fleeting autocmd already sets ss/sm/sl + the fleeting create
@@ -1116,6 +1677,10 @@ vim.api.nvim_create_autocmd("BufReadPost", {
                     if line:match("^snooze_count:") then
                         local count = tonumber(line:match("^snooze_count:%s*(%d+)")) or 0
                         lines[i] = "snooze_count: " .. (count + 1)
+                    end
+                    -- v2: snoozing an active item frees its slot.
+                    if line:match("^stage:%s*active%s*$") then
+                        lines[i] = "stage: ready"
                     end
                 end
                 vim.api.nvim_buf_set_lines(b, 0, -1, false, lines)
@@ -1153,6 +1718,18 @@ vim.api.nvim_create_autocmd("BufReadPost", {
             end
             vim.keymap.set("n", "dn", function() mark_status("done") end, opts)
             vim.keymap.set("n", "dm", function() mark_status("missed") end, opts)
+            -- v2: demote to someday (listed in someday.md, archived on close)
+            vim.keymap.set("n", "ds", function()
+                local f = vim.api.nvim_buf_get_name(0)
+                local fm = read_note(f)
+                send_to_someday(f, (fm.title and fm.title ~= "") and fm.title
+                    or vim.fn.fnamemodify(f, ":t:r"))
+            end, opts)
+
+            if marker == "project" then
+                vim.keymap.set("n", "<leader>zt", function() promote_step() end,
+                    vim.tbl_extend("force", opts, { desc = "Promote step → ticket" }))
+            end
         end
     end,
 })

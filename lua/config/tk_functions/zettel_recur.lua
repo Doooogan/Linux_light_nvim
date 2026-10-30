@@ -35,7 +35,7 @@
 
 local R = {}
 
-local vault = vim.fn.expand("~/zettelkasten/")
+local vault = vim.g.zettel_vault or vim.fn.expand("~/zettelkasten/")
 
 -- ---------------------------------------------------------------------
 -- Date helpers (YYYY-MM-DD strings; os.time tables for arithmetic)
@@ -208,6 +208,7 @@ local function spawn_ticket(fm, occ_date)
         "tags: " .. (fm.tags or ""),
         "recur_id: " .. (fm.recur_id or ""),
         "snooze_count: 0",
+        "stage: ready",  -- v2: chores are already concrete actions
         "---",
         "",
         ":ticket:",
